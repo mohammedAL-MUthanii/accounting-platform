@@ -1,14 +1,12 @@
 import { Navigate } from "react-router-dom";
-import { getCurrentUser } from "../utils/auth";
+import { isAdmin, isLoggedIn } from "../utils/auth";
 
 function AdminRoute({ children }) {
-  const currentUser = getCurrentUser();
-
-  if (!currentUser) {
+  if (!isLoggedIn()) {
     return <Navigate to="/login" replace />;
   }
 
-  if (currentUser.role !== "admin") {
+  if (!isAdmin()) {
     return <Navigate to="/" replace />;
   }
 

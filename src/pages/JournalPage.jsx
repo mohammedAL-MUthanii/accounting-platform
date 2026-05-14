@@ -1,29 +1,31 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
-  Trash2,
-  Save,
   NotebookPen,
-  Pencil,
-  XCircle,
   Printer,
+  RefreshCcw,
+  ReceiptText,
+  ShoppingCart,
+  ShoppingBag,
+  Wallet,
 } from "lucide-react";
 
 import AppToast from "../components/AppToast";
-import AppConfirm from "../components/AppConfirm";
+import { getAuthToken } from "../utils/auth";
+
+const API_BASE_URL = "http://127.0.0.1:8000/api";
 
 const defaultAccounts = [
   { id: 1, name: "الصندوق", type: "asset", isDefault: true },
   { id: 2, name: "البنك", type: "asset", isDefault: true },
   { id: 3, name: "العملاء", type: "asset", isDefault: true },
   { id: 4, name: "المخزون", type: "asset", isDefault: true },
-  { id: 5, name: "الأثاث", type: "asset", isDefault: true },
-  { id: 6, name: "معدات", type: "asset", isDefault: true },
-  { id: 7, name: "الموردون", type: "liability", isDefault: true },
-  { id: 8, name: "رأس المال", type: "equity", isDefault: true },
-  { id: 9, name: "المبيعات", type: "revenue", isDefault: true },
-  { id: 10, name: "المشتريات", type: "expense", isDefault: true },
-  { id: 11, name: "مصروف الإيجار", type: "expense", isDefault: true },
-  { id: 12, name: "مصروف الرواتب", type: "expense", isDefault: true },
+  { id: 5, name: "تكلفة البضاعة المباعة", type: "expense", isDefault: true },
+  { id: 6, name: "الموردون", type: "liability", isDefault: true },
+  { id: 7, name: "رأس المال", type: "equity", isDefault: true },
+  { id: 8, name: "المبيعات", type: "revenue", isDefault: true },
+  { id: 9, name: "المشتريات", type: "expense", isDefault: true },
+  { id: 10, name: "مصروف الإيجار", type: "expense", isDefault: true },
+  { id: 11, name: "مصروف الرواتب", type: "expense", isDefault: true },
 ];
 
 const accountTypeNames = {
@@ -34,57 +36,99 @@ const accountTypeNames = {
   expense: "مصروف",
 };
 
-const accountNature = {
-  asset: "debit",
-  expense: "debit",
-  liability: "credit",
-  equity: "credit",
-  revenue: "credit",
-};
+function formatCurrency(value) {
+  return `${Number(value || 0).toLocaleString()} ريال`;
+}
 
-function readArray(key) {
-  try {
-    const raw = localStorage.getItem(key);
-    const data = JSON.parse(raw);
-    return Array.isArray(data) ? data : [];
-  } catch {
-    return [];
-  }
+function formatDate(value) {
+  return String(value || "").slice(0, 10);
+}
+
+function normalizeSalesInvoice(invoice) {
+  const items = Array.isArray(invoice.items) ? invoice.items : [];
+
+  return {
+    id: invoice.id,
+    number: invoice.id,
+    date: formatDate(invoice.invoice_date || invoice.created_at),
+    customerName: invoice.customer_name || "عميل نقدي",
+    paymentType: invoice.payment_type || "cash",
+    grossTotal: Number(invoice.gross_total || 0),
+    discountTotal: Number(invoice.discount_total || 0),
+    netTotal: Number(invoice.net_total || 0),
+    profitTotal: Number(invoice.profit_total || 0),
+    costTotal: items.reduce((sum, item) => {
+      return sum + Number(item.cost_price || 0) * Number(item.quantity || 0);
+    }, 0),
+    items,
+  };
+}
+
+function normalizePurchaseInvoice(invoice) {
+  return {
+    id: invoice.id,
+    number: invoice.id,
+    date: formatDate(invoice.invoice_date || invoice.created_at),
+    supplierName: invoice.supplier_name || "مورد غير محدد",
+    paymentType: invoice.payment_type || "cash",
+    total: Number(invoice.total || 0),
+    items: Array.isArray(invoice.items) ? invoice.items : [],
+  };
+}
+
+function normalizeVoucher(voucher) {
+  return {
+    id: voucher.id,
+    number: voucher.id,
+    type: voucher.type,
+    date: formatDate(voucher.voucher_date || voucher.created_at),
+    partyName: voucher.party_name || "غير محدد",
+    accountName: voucher.account_name || "",
+    paymentMethod: voucher.payment_method || "الصندوق",
+    amount: Number(voucher.amount || 0),
+    description: voucher.description || "",
+    debitAccount: voucher.debit_account || "",
+    creditAccount: voucher.credit_account || "",
+  };
+}
+
+function getAccountInfo(accountName) {
+  return defaultAccounts.find((account) => account.name === accountName);
+}
+
+function makeEntry({
+  id,
+  number,
+  date,
+  debitAccount,
+  creditAccount,
+  description,
+  amount,
+  source,
+  sourceLabel,
+}) {
+  return {
+    id,
+    number,
+    date,
+    debitAccount,
+    creditAccount,
+    description,
+    amount: Number(amount || 0),
+    source,
+    sourceLabel,
+  };
 }
 
 function JournalPage() {
-  const [entries, setEntries] = useState(() => readArray("journalEntries"));
-
-  const [accounts, setAccounts] = useState(() => {
-    const savedAccounts = readArray("accounts");
-    return savedAccounts.length > 0 ? savedAccounts : defaultAccounts;
-  });
-
-  const [editingId, setEditingId] = useState(null);
-
+  const [salesInvoices, setSalesInvoices] = useState([]);
+  const [purchaseInvoices, setPurchaseInvoices] = useState([]);
+  const [vouchers, setVouchers] = useState([]);
+  const [isLoading, setIsLoading] = useState(true);
   const [toast, setToast] = useState(null);
-  const [confirmState, setConfirmState] = useState({
-    open: false,
-    entryId: null,
-    title: "",
-    message: "",
-  });
-
-  const [form, setForm] = useState({
-    date: "",
-    debitAccount: "",
-    creditAccount: "",
-    description: "",
-    amount: "",
-  });
 
   useEffect(() => {
-    localStorage.setItem("journalEntries", JSON.stringify(entries));
-  }, [entries]);
-
-  useEffect(() => {
-    const savedAccounts = readArray("accounts");
-    setAccounts(savedAccounts.length > 0 ? savedAccounts : defaultAccounts);
+    loadJournalData();
   }, []);
 
   function showToast(message, type = "success") {
@@ -99,183 +143,183 @@ function JournalPage() {
     window.print();
   }
 
-  function getAccountInfo(accountName) {
-    return accounts.find((account) => account.name === accountName);
-  }
+  async function loadJournalData() {
+    setIsLoading(true);
 
-  function handleChange(e) {
-    const { name, value } = e.target;
+    try {
+      const token = getAuthToken();
 
-    setForm({
-      ...form,
-      [name]: value,
-    });
-  }
+      const [salesResponse, purchasesResponse, vouchersResponse] =
+        await Promise.all([
+          fetch(`${API_BASE_URL}/sales-invoices`, {
+            headers: {
+              Accept: "application/json",
+              Authorization: `Bearer ${token}`,
+            },
+          }),
+          fetch(`${API_BASE_URL}/purchase-invoices`, {
+            headers: {
+              Accept: "application/json",
+              Authorization: `Bearer ${token}`,
+            },
+          }),
+          fetch(`${API_BASE_URL}/vouchers`, {
+            headers: {
+              Accept: "application/json",
+              Authorization: `Bearer ${token}`,
+            },
+          }),
+        ]);
 
-  function resetForm() {
-    setForm({
-      date: "",
-      debitAccount: "",
-      creditAccount: "",
-      description: "",
-      amount: "",
-    });
+      const salesData = await salesResponse.json();
+      const purchasesData = await purchasesResponse.json();
+      const vouchersData = await vouchersResponse.json();
 
-    setEditingId(null);
-  }
+      if (!salesResponse.ok) {
+        showToast(salesData.message || "تعذر تحميل فواتير المبيعات.", "error");
+      }
 
-  function validateEntry() {
-    if (
-      !form.date ||
-      !form.debitAccount ||
-      !form.creditAccount ||
-      !form.description.trim() ||
-      !form.amount
-    ) {
-      showToast("رجاءً املأ جميع حقول القيد.", "warning");
-      return false;
+      if (!purchasesResponse.ok) {
+        showToast(
+          purchasesData.message || "تعذر تحميل فواتير المشتريات.",
+          "error"
+        );
+      }
+
+      if (!vouchersResponse.ok) {
+        showToast(vouchersData.message || "تعذر تحميل السندات.", "error");
+      }
+
+      setSalesInvoices(
+        Array.isArray(salesData.sales_invoices)
+          ? salesData.sales_invoices.map(normalizeSalesInvoice)
+          : []
+      );
+
+      setPurchaseInvoices(
+        Array.isArray(purchasesData.purchase_invoices)
+          ? purchasesData.purchase_invoices.map(normalizePurchaseInvoice)
+          : []
+      );
+
+      setVouchers(
+        Array.isArray(vouchersData.vouchers)
+          ? vouchersData.vouchers.map(normalizeVoucher)
+          : []
+      );
+    } catch {
+      showToast(
+        "تعذر الاتصال بالسيرفر. تأكد أن Laravel يعمل على http://127.0.0.1:8000",
+        "error"
+      );
     }
 
-    if (form.debitAccount === form.creditAccount) {
-      showToast("لا يمكن أن يكون الحساب المدين هو نفسه الحساب الدائن.", "error");
-      return false;
-    }
-
-    if (Number(form.amount) <= 0) {
-      showToast("المبلغ يجب أن يكون أكبر من صفر.", "warning");
-      return false;
-    }
-
-    return true;
+    setIsLoading(false);
   }
 
-  function saveEntry(e) {
-    e.preventDefault();
+  const entries = useMemo(() => {
+    const generatedEntries = [];
 
-    if (!validateEntry()) return;
+    salesInvoices.forEach((invoice) => {
+      const debitAccount =
+        invoice.paymentType === "credit" ? "العملاء" : "الصندوق";
 
-    if (editingId) {
-      const updatedEntries = entries.map((entry) => {
-        if (entry.id === editingId) {
-          return {
-            ...entry,
-            date: form.date,
-            debitAccount: form.debitAccount,
-            creditAccount: form.creditAccount,
-            description: form.description.trim(),
-            amount: Number(form.amount),
-          };
-        }
+      generatedEntries.push(
+        makeEntry({
+          id: `sale-revenue-${invoice.id}`,
+          date: invoice.date,
+          debitAccount,
+          creditAccount: "المبيعات",
+          description: `إثبات فاتورة بيع رقم ${invoice.number} - ${invoice.customerName}`,
+          amount: invoice.netTotal,
+          source: "sales",
+          sourceLabel: "مبيعات",
+        })
+      );
 
-        return entry;
-      });
-
-      setEntries(updatedEntries);
-      resetForm();
-      showToast("تم تحديث القيد بنجاح.");
-      return;
-    }
-
-    const maxNumber = entries.length
-      ? Math.max(...entries.map((entry) => Number(entry.number || 0)))
-      : 0;
-
-    const newEntry = {
-      id: Date.now(),
-      number: maxNumber + 1,
-      date: form.date,
-      debitAccount: form.debitAccount,
-      creditAccount: form.creditAccount,
-      description: form.description.trim(),
-      amount: Number(form.amount),
-      source: "manual",
-    };
-
-    setEntries([newEntry, ...entries]);
-    resetForm();
-    showToast("تم حفظ القيد بنجاح.");
-  }
-
-  function startEdit(entry) {
-    setEditingId(entry.id);
-
-    setForm({
-      date: entry.date,
-      debitAccount: entry.debitAccount,
-      creditAccount: entry.creditAccount,
-      description: entry.description,
-      amount: entry.amount,
+      if (invoice.costTotal > 0) {
+        generatedEntries.push(
+          makeEntry({
+            id: `sale-cost-${invoice.id}`,
+            date: invoice.date,
+            debitAccount: "تكلفة البضاعة المباعة",
+            creditAccount: "المخزون",
+            description: `إثبات تكلفة البضاعة المباعة لفاتورة بيع رقم ${invoice.number}`,
+            amount: invoice.costTotal,
+            source: "sales-cost",
+            sourceLabel: "تكلفة مبيعات",
+          })
+        );
+      }
     });
 
-    window.scrollTo({
-      top: 0,
-      behavior: "smooth",
-    });
-  }
+    purchaseInvoices.forEach((invoice) => {
+      const creditAccount =
+        invoice.paymentType === "credit" ? "الموردون" : "الصندوق";
 
-  function deleteEntry(id) {
-    const entry = entries.find((item) => item.id === id);
-
-    if (!entry) return;
-
-    setConfirmState({
-      open: true,
-      entryId: id,
-      title: `حذف قيد رقم ${entry.number}`,
-      message:
-        "هل تريد حذف هذا القيد من دفتر اليومية؟ هذا الإجراء سيؤثر على الأستاذ وميزان المراجعة والقوائم المالية.",
-    });
-  }
-
-  function confirmDeleteEntry() {
-    const id = confirmState.entryId;
-
-    const updatedEntries = entries.filter((entry) => entry.id !== id);
-    setEntries(updatedEntries);
-
-    if (editingId === id) {
-      resetForm();
-    }
-
-    setConfirmState({
-      open: false,
-      entryId: null,
-      title: "",
-      message: "",
+      generatedEntries.push(
+        makeEntry({
+          id: `purchase-${invoice.id}`,
+          date: invoice.date,
+          debitAccount: "المخزون",
+          creditAccount,
+          description: `إثبات فاتورة شراء رقم ${invoice.number} - ${invoice.supplierName}`,
+          amount: invoice.total,
+          source: "purchases",
+          sourceLabel: "مشتريات",
+        })
+      );
     });
 
-    showToast("تم حذف القيد بنجاح.");
-  }
-
-  function cancelDeleteEntry() {
-    setConfirmState({
-      open: false,
-      entryId: null,
-      title: "",
-      message: "",
+    vouchers.forEach((voucher) => {
+      generatedEntries.push(
+        makeEntry({
+          id: `voucher-${voucher.id}`,
+          date: voucher.date,
+          debitAccount: voucher.debitAccount,
+          creditAccount: voucher.creditAccount,
+          description:
+            voucher.description ||
+            `${voucher.type === "receipt" ? "سند قبض" : "سند صرف"} رقم ${
+              voucher.number
+            } - ${voucher.partyName}`,
+          amount: voucher.amount,
+          source: "vouchers",
+          sourceLabel: voucher.type === "receipt" ? "سند قبض" : "سند صرف",
+        })
+      );
     });
-  }
 
-  const debitAccountInfo = getAccountInfo(form.debitAccount);
-  const creditAccountInfo = getAccountInfo(form.creditAccount);
-
-  const debitWarning =
-    debitAccountInfo && accountNature[debitAccountInfo.type] === "credit"
-      ? `تنبيه: حساب "${form.debitAccount}" نوعه ${
-          accountTypeNames[debitAccountInfo.type]
-        } وطبيعته غالبًا دائن، ووضعه في الطرف المدين قد يكون غير صحيح إلا في حالات خاصة.`
-      : "";
-
-  const creditWarning =
-    creditAccountInfo && accountNature[creditAccountInfo.type] === "debit"
-      ? `تنبيه: حساب "${form.creditAccount}" نوعه ${
-          accountTypeNames[creditAccountInfo.type]
-        } وطبيعته غالبًا مدين، ووضعه في الطرف الدائن قد يكون غير صحيح إلا في حالات خاصة.`
-      : "";
+    return generatedEntries
+      .filter((entry) => Number(entry.amount || 0) > 0)
+      .sort((a, b) => {
+        return new Date(b.date) - new Date(a.date);
+      })
+      .map((entry, index) => ({
+        ...entry,
+        number: index + 1,
+      }));
+  }, [salesInvoices, purchaseInvoices, vouchers]);
 
   const totalAmount = entries.reduce((sum, entry) => {
     return sum + Number(entry.amount || 0);
   }, 0);
+
+  const summary = useMemo(() => {
+    const salesEntries = entries.filter((entry) => entry.source === "sales");
+    const purchaseEntries = entries.filter(
+      (entry) => entry.source === "purchases"
+    );
+    const voucherEntries = entries.filter((entry) => entry.source === "vouchers");
+
+    return {
+      salesCount: salesEntries.length,
+      purchasesCount: purchaseEntries.length,
+      vouchersCount: voucherEntries.length,
+      totalDebits: totalAmount,
+      totalCredits: totalAmount,
+    };
+  }, [entries, totalAmount]);
 
   return (
     <div className="page">
@@ -284,12 +328,22 @@ function JournalPage() {
           <div>
             <h1 className="section-title">دفتر اليومية</h1>
             <p className="section-subtitle">
-              هنا تبدأ التطبيق الحقيقي: أدخل القيود المحاسبية باستخدام الحسابات
-              التي أنشأتها في صفحة إدارة الحسابات.
+              دفتر يومية تلقائي من بيانات Laravel: فواتير البيع، فواتير الشراء،
+              وسندات القبض والصرف.
             </p>
           </div>
 
           <div className="report-actions no-print">
+            <button
+              type="button"
+              className="secondary-btn"
+              onClick={loadJournalData}
+              disabled={isLoading}
+            >
+              <RefreshCcw size={18} />
+              {isLoading ? "جاري التحديث..." : "تحديث من السيرفر"}
+            </button>
+
             <button type="button" className="primary-btn" onClick={printJournal}>
               <Printer size={18} />
               طباعة / حفظ PDF
@@ -304,159 +358,93 @@ function JournalPage() {
 
             <div>
               <span>إجمالي المبالغ</span>
-              <strong>{totalAmount.toLocaleString()} ريال</strong>
+              <strong>{formatCurrency(totalAmount)}</strong>
             </div>
           </div>
         </div>
 
-        <div className="journal-layout">
-          <form className="journal-form no-print" onSubmit={saveEntry}>
-            <div className="form-title">
-              <NotebookPen size={22} />
-              <h2>{editingId ? "تعديل القيد" : "إضافة قيد جديد"}</h2>
-            </div>
+        <div className="sales-summary no-print">
+          <div className="sales-summary-card">
+            <ShoppingCart size={26} />
+            <span>قيود المبيعات</span>
+            <strong>{summary.salesCount}</strong>
+          </div>
 
-            {editingId && (
-              <div className="edit-alert">
-                أنت الآن تعدل قيدًا موجودًا. بعد التعديل اضغط تحديث القيد.
-              </div>
-            )}
+          <div className="sales-summary-card">
+            <ShoppingBag size={26} />
+            <span>قيود المشتريات</span>
+            <strong>{summary.purchasesCount}</strong>
+          </div>
 
-            <label>
-              التاريخ
-              <input
-                type="date"
-                name="date"
-                value={form.date}
-                onChange={handleChange}
-              />
-            </label>
+          <div className="sales-summary-card">
+            <Wallet size={26} />
+            <span>قيود السندات</span>
+            <strong>{summary.vouchersCount}</strong>
+          </div>
 
-            <label>
-              الحساب المدين
-              <select
-                name="debitAccount"
-                value={form.debitAccount}
-                onChange={handleChange}
-              >
-                <option value="">اختر الحساب المدين</option>
+          <div className="sales-summary-card">
+            <ReceiptText size={26} />
+            <span>توازن اليومية</span>
+            <strong>{formatCurrency(summary.totalDebits)}</strong>
+          </div>
+        </div>
 
-                {accounts.map((account) => (
-                  <option key={account.id} value={account.name}>
-                    {account.name} - {accountTypeNames[account.type]}
-                  </option>
-                ))}
-              </select>
-            </label>
+        <div className="balance-status success no-print">
+          <NotebookPen size={22} />
+          <span>
+            هذه الصفحة تولّد القيود تلقائيًا من العمليات الفعلية. إذا أردت
+            تعديل عملية، عدّل الفاتورة أو السند من صفحته الأساسية بدل تعديل
+            القيد مباشرة.
+          </span>
+        </div>
 
-            {debitWarning && <div className="smart-warning">{debitWarning}</div>}
+        <div className="journal-table">
+          <h2>القيود المسجلة تلقائيًا</h2>
 
-            <label>
-              الحساب الدائن
-              <select
-                name="creditAccount"
-                value={form.creditAccount}
-                onChange={handleChange}
-              >
-                <option value="">اختر الحساب الدائن</option>
+          {isLoading ? (
+            <p className="empty-text">جاري تحميل قيود اليومية من السيرفر...</p>
+          ) : entries.length === 0 ? (
+            <p className="empty-text">
+              لا توجد قيود حتى الآن. أنشئ فاتورة بيع أو شراء أو سندًا أولًا.
+            </p>
+          ) : (
+            <div className="table-wrapper">
+              <table>
+                <thead>
+                  <tr>
+                    <th>رقم القيد</th>
+                    <th>التاريخ</th>
+                    <th>الحساب المدين</th>
+                    <th>الحساب الدائن</th>
+                    <th>البيان</th>
+                    <th>المبلغ</th>
+                    <th>المصدر</th>
+                  </tr>
+                </thead>
 
-                {accounts.map((account) => (
-                  <option key={account.id} value={account.name}>
-                    {account.name} - {accountTypeNames[account.type]}
-                  </option>
-                ))}
-              </select>
-            </label>
+                <tbody>
+                  {entries.map((entry) => {
+                    const debitAccountInfo = getAccountInfo(entry.debitAccount);
+                    const creditAccountInfo = getAccountInfo(
+                      entry.creditAccount
+                    );
 
-            {creditWarning && (
-              <div className="smart-warning">{creditWarning}</div>
-            )}
-
-            <label>
-              البيان
-              <textarea
-                name="description"
-                placeholder="مثال: إثبات رأس مال المنشأة"
-                value={form.description}
-                onChange={handleChange}
-              />
-            </label>
-
-            <label>
-              المبلغ
-              <input
-                type="number"
-                name="amount"
-                placeholder="مثال: 100000"
-                value={form.amount}
-                onChange={handleChange}
-              />
-            </label>
-
-            <button className="primary-btn">
-              <Save size={18} />
-              {editingId ? "تحديث القيد" : "حفظ القيد"}
-            </button>
-
-            {editingId && (
-              <button
-                type="button"
-                className="cancel-edit-btn"
-                onClick={resetForm}
-              >
-                <XCircle size={18} />
-                إلغاء التعديل
-              </button>
-            )}
-          </form>
-
-          <div className="journal-table">
-            <h2>القيود المسجلة</h2>
-
-            {entries.length === 0 ? (
-              <p className="empty-text">
-                لا توجد قيود حتى الآن. أضف أول قيد من النموذج.
-              </p>
-            ) : (
-              <div className="table-wrapper">
-                <table>
-                  <thead>
-                    <tr>
-                      <th>رقم القيد</th>
-                      <th>التاريخ</th>
-                      <th>الحساب المدين</th>
-                      <th>الحساب الدائن</th>
-                      <th>البيان</th>
-                      <th>المبلغ</th>
-                      <th>إجراء</th>
-                    </tr>
-                  </thead>
-
-                  <tbody>
-                    {entries.map((entry) => (
-                      <tr
-                        key={entry.id}
-                        className={editingId === entry.id ? "editing-row" : ""}
-                      >
+                    return (
+                      <tr key={entry.id}>
                         <td>#{entry.number}</td>
                         <td>{entry.date}</td>
+
                         <td>
                           <div className="account-cell">
                             <span className="debit-badge">
                               {entry.debitAccount}
                             </span>
 
-                            {getAccountInfo(entry.debitAccount) && (
+                            {debitAccountInfo && (
                               <span
-                                className={`account-type-badge ${
-                                  getAccountInfo(entry.debitAccount).type
-                                }`}
+                                className={`account-type-badge ${debitAccountInfo.type}`}
                               >
-                                {
-                                  accountTypeNames[
-                                    getAccountInfo(entry.debitAccount).type
-                                  ]
-                                }
+                                {accountTypeNames[debitAccountInfo.type]}
                               </span>
                             )}
                           </div>
@@ -468,67 +456,44 @@ function JournalPage() {
                               {entry.creditAccount}
                             </span>
 
-                            {getAccountInfo(entry.creditAccount) && (
+                            {creditAccountInfo && (
                               <span
-                                className={`account-type-badge ${
-                                  getAccountInfo(entry.creditAccount).type
-                                }`}
+                                className={`account-type-badge ${creditAccountInfo.type}`}
                               >
-                                {
-                                  accountTypeNames[
-                                    getAccountInfo(entry.creditAccount).type
-                                  ]
-                                }
+                                {accountTypeNames[creditAccountInfo.type]}
                               </span>
                             )}
                           </div>
                         </td>
 
                         <td>{entry.description}</td>
-                        <td>{Number(entry.amount || 0).toLocaleString()} ريال</td>
-                        <td>
-                          <div className="action-buttons">
-                            <button
-                              type="button"
-                              className="edit-btn"
-                              onClick={() => startEdit(entry)}
-                              title="تعديل"
-                            >
-                              <Pencil size={16} />
-                            </button>
 
-                            <button
-                              type="button"
-                              className="delete-btn"
-                              onClick={() => deleteEntry(entry.id)}
-                              title="حذف"
-                            >
-                              <Trash2 size={17} />
-                            </button>
-                          </div>
+                        <td>{formatCurrency(entry.amount)}</td>
+
+                        <td>
+                          <span className="payment-badge">
+                            {entry.sourceLabel}
+                          </span>
                         </td>
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </div>
+                    );
+                  })}
+                </tbody>
+
+                <tfoot>
+                  <tr>
+                    <th colSpan="5">الإجمالي</th>
+                    <th>{formatCurrency(totalAmount)}</th>
+                    <th>مدين = دائن</th>
+                  </tr>
+                </tfoot>
+              </table>
+            </div>
+          )}
         </div>
       </div>
 
       <AppToast toast={toast} onClose={() => setToast(null)} />
-
-      <AppConfirm
-        open={confirmState.open}
-        title={confirmState.title}
-        message={confirmState.message}
-        confirmText="نعم، حذف"
-        cancelText="إلغاء"
-        danger
-        onConfirm={confirmDeleteEntry}
-        onCancel={cancelDeleteEntry}
-      />
     </div>
   );
 }

@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   Receipt,
   Plus,
@@ -8,14 +8,14 @@ import {
   ArrowDownCircle,
   ArrowUpCircle,
   AlertCircle,
-  CheckCircle2,
+  RefreshCcw,
 } from "lucide-react";
 
 import AppToast from "../components/AppToast";
 import AppConfirm from "../components/AppConfirm";
+import { getAuthToken } from "../utils/auth";
 
-const VOUCHERS_KEY = "vouchers";
-const JOURNAL_KEY = "journalEntries";
+const API_BASE_URL = "http://127.0.0.1:8000/api";
 
 const defaultAccounts = [
   { id: 1, name: "الصندوق", type: "asset" },
@@ -31,22 +31,12 @@ const defaultAccounts = [
 
 const cashAccounts = ["الصندوق", "البنك"];
 
-function readArray(key) {
-  try {
-    const raw = localStorage.getItem(key);
-    const data = JSON.parse(raw);
-    return Array.isArray(data) ? data : [];
-  } catch {
-    return [];
-  }
-}
-
-function saveArray(key, value) {
-  localStorage.setItem(key, JSON.stringify(value));
-}
-
 function formatCurrency(value) {
   return `${Number(value || 0).toLocaleString()} ريال`;
+}
+
+function formatDate(value) {
+  return String(value || "").slice(0, 10);
 }
 
 function getAccountTypeName(type) {
@@ -58,9 +48,28 @@ function getAccountTypeName(type) {
   return "غير مصنف";
 }
 
+function normalizeVoucher(voucher) {
+  return {
+    id: voucher.id,
+    number: voucher.id,
+    type: voucher.type,
+    date: formatDate(voucher.voucher_date || voucher.created_at),
+    partyName: voucher.party_name || "",
+    accountName: voucher.account_name || "",
+    amount: Number(voucher.amount || 0),
+    paymentMethod: voucher.payment_method || "الصندوق",
+    description: voucher.description || "",
+    debitAccount: voucher.debit_account || "",
+    creditAccount: voucher.credit_account || "",
+    createdAt: voucher.created_at,
+  };
+}
+
 function VouchersPage() {
-  const [vouchers, setVouchers] = useState(() => readArray(VOUCHERS_KEY));
+  const [vouchers, setVouchers] = useState([]);
   const [searchTerm, setSearchTerm] = useState("");
+  const [isLoading, setIsLoading] = useState(true);
+  const [isSaving, setIsSaving] = useState(false);
 
   const [toast, setToast] = useState(null);
   const [confirmState, setConfirmState] = useState({
@@ -70,8 +79,7 @@ function VouchersPage() {
     message: "",
   });
 
-  const savedAccounts = readArray("accounts");
-  const accounts = savedAccounts.length > 0 ? savedAccounts : defaultAccounts;
+  const accounts = defaultAccounts;
 
   const [form, setForm] = useState({
     type: "receipt",
@@ -82,6 +90,46 @@ function VouchersPage() {
     paymentMethod: "الصندوق",
     description: "سند قبض",
   });
+
+  useEffect(() => {
+    loadVouchers();
+  }, []);
+
+  async function loadVouchers() {
+    setIsLoading(true);
+
+    try {
+      const token = getAuthToken();
+
+      const response = await fetch(`${API_BASE_URL}/vouchers`, {
+        headers: {
+          Accept: "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        showToast(data.message || "تعذر تحميل السندات من السيرفر.", "error");
+        setIsLoading(false);
+        return;
+      }
+
+      const normalizedVouchers = Array.isArray(data.vouchers)
+        ? data.vouchers.map(normalizeVoucher)
+        : [];
+
+      setVouchers(normalizedVouchers);
+    } catch {
+      showToast(
+        "تعذر الاتصال بالسيرفر. تأكد أن Laravel يعمل على http://127.0.0.1:8000",
+        "error"
+      );
+    }
+
+    setIsLoading(false);
+  }
 
   const receiptAccounts = accounts
     .filter((account) => {
@@ -184,57 +232,66 @@ function VouchersPage() {
     return true;
   }
 
-  function saveVoucher(e) {
+  async function saveVoucher(e) {
     e.preventDefault();
 
     if (!validateForm()) return;
 
-    const currentVouchers = readArray(VOUCHERS_KEY);
-    const currentEntries = readArray(JOURNAL_KEY);
+    setIsSaving(true);
 
-    const voucherNumber = currentVouchers.length + 1;
-    const voucherId = Date.now();
+    try {
+      const token = getAuthToken();
 
-    const newVoucher = {
-      id: voucherId,
-      number: voucherNumber,
-      type: form.type,
-      date: form.date,
-      partyName: form.partyName.trim(),
-      accountName: form.accountName,
-      amount: Number(form.amount),
-      paymentMethod: form.paymentMethod,
-      description:
-        form.description ||
-        (form.type === "receipt" ? "سند قبض" : "سند صرف"),
-      createdAt: new Date().toISOString(),
-    };
+      const payload = {
+        type: form.type,
+        voucher_date: form.date,
+        party_name: form.partyName.trim(),
+        account_name: form.accountName,
+        payment_method: form.paymentMethod,
+        amount: Number(form.amount),
+        description:
+          form.description ||
+          (form.type === "receipt" ? "سند قبض" : "سند صرف"),
+      };
 
-    const journalEntry = {
-      id: voucherId + 1,
-      number: currentEntries.length + 1,
-      date: form.date,
-      debitAccount: expectedEntry.debitAccount,
-      creditAccount: expectedEntry.creditAccount,
-      description:
-        form.type === "receipt"
-          ? `سند قبض رقم ${voucherNumber} - ${form.partyName.trim()}`
-          : `سند صرف رقم ${voucherNumber} - ${form.partyName.trim()}`,
-      amount: Number(form.amount),
-      source: "voucher",
-      voucherNumber,
-    };
+      const response = await fetch(`${API_BASE_URL}/vouchers`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify(payload),
+      });
 
-    const updatedVouchers = [newVoucher, ...currentVouchers];
-    const updatedEntries = [journalEntry, ...currentEntries];
+      const data = await response.json();
 
-    saveArray(VOUCHERS_KEY, updatedVouchers);
-    saveArray(JOURNAL_KEY, updatedEntries);
+      if (!response.ok) {
+        const firstError =
+          data?.errors?.type?.[0] ||
+          data?.errors?.voucher_date?.[0] ||
+          data?.errors?.party_name?.[0] ||
+          data?.errors?.account_name?.[0] ||
+          data?.errors?.payment_method?.[0] ||
+          data?.errors?.amount?.[0] ||
+          data?.message;
 
-    setVouchers(updatedVouchers);
-    resetForm();
+        showToast(firstError || "تعذر حفظ السند.", "error");
+        setIsSaving(false);
+        return;
+      }
 
-    showToast("تم حفظ السند وتوليد القيد في دفتر اليومية بنجاح.");
+      const newVoucher = normalizeVoucher(data.voucher);
+
+      setVouchers((prev) => [newVoucher, ...prev]);
+      resetForm();
+
+      showToast(data.message || "تم حفظ السند بنجاح.");
+    } catch {
+      showToast("تعذر الاتصال بالسيرفر أثناء حفظ السند.", "error");
+    }
+
+    setIsSaving(false);
   }
 
   function requestDeleteVoucher(id) {
@@ -246,26 +303,45 @@ function VouchersPage() {
       open: true,
       voucherId: id,
       title: `حذف سند رقم ${voucher.number}`,
-      message:
-        "هل تريد حذف هذا السند؟ ملاحظة: لن يتم حذف القيد المرتبط من دفتر اليومية تلقائيًا.",
+      message: "هل تريد حذف هذا السند من قاعدة البيانات؟",
     });
   }
 
-  function confirmDeleteVoucher() {
+  async function confirmDeleteVoucher() {
     const id = confirmState.voucherId;
 
-    const updatedVouchers = vouchers.filter((item) => item.id !== id);
-    saveArray(VOUCHERS_KEY, updatedVouchers);
-    setVouchers(updatedVouchers);
+    if (!id) {
+      cancelDeleteVoucher();
+      return;
+    }
 
-    setConfirmState({
-      open: false,
-      voucherId: null,
-      title: "",
-      message: "",
-    });
+    try {
+      const token = getAuthToken();
 
-    showToast("تم حذف السند بنجاح.", "success");
+      const response = await fetch(`${API_BASE_URL}/vouchers/${id}`, {
+        method: "DELETE",
+        headers: {
+          Accept: "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        showToast(data.message || "تعذر حذف السند.", "error");
+        cancelDeleteVoucher();
+        return;
+      }
+
+      setVouchers((prev) => prev.filter((item) => item.id !== id));
+
+      cancelDeleteVoucher();
+      showToast(data.message || "تم حذف السند بنجاح.");
+    } catch {
+      cancelDeleteVoucher();
+      showToast("تعذر الاتصال بالسيرفر أثناء حذف السند.", "error");
+    }
   }
 
   function cancelDeleteVoucher() {
@@ -318,8 +394,8 @@ function VouchersPage() {
           <div>
             <h1 className="section-title">السندات</h1>
             <p className="section-subtitle">
-              أنشئ سند قبض أو سند صرف، وسيتم توليد القيد المحاسبي تلقائيًا في
-              دفتر اليومية مع منع الأخطاء المحاسبية الواضحة.
+              أنشئ سند قبض أو سند صرف، وسيتم حفظ السند في قاعدة بيانات Laravel
+              مع عرض القيد المتوقع قبل الحفظ.
             </p>
           </div>
 
@@ -479,9 +555,19 @@ function VouchersPage() {
               />
             </label>
 
-            <button className="primary-btn">
+            <button className="primary-btn" disabled={isSaving}>
               <Plus size={18} />
-              حفظ السند
+              {isSaving ? "جاري الحفظ..." : "حفظ السند"}
+            </button>
+
+            <button
+              type="button"
+              className="secondary-btn"
+              onClick={loadVouchers}
+              disabled={isLoading}
+            >
+              <RefreshCcw size={18} />
+              {isLoading ? "جاري التحديث..." : "تحديث السندات من السيرفر"}
             </button>
           </form>
 
@@ -489,7 +575,7 @@ function VouchersPage() {
             <div className="vouchers-list-header">
               <div>
                 <h2>قائمة السندات</h2>
-                <p>تابع سندات القبض والصرف المسجلة.</p>
+                <p>تابع سندات القبض والصرف المسجلة في قاعدة البيانات.</p>
               </div>
 
               <div className="voucher-search">
@@ -503,7 +589,9 @@ function VouchersPage() {
               </div>
             </div>
 
-            {filteredVouchers.length === 0 ? (
+            {isLoading ? (
+              <div className="empty-search">جاري تحميل السندات من السيرفر...</div>
+            ) : filteredVouchers.length === 0 ? (
               <div className="empty-search">
                 لا توجد سندات مطابقة للبحث الحالي.
               </div>
@@ -570,8 +658,8 @@ function VouchersPage() {
         <div className="balance-status success">
           <AlertCircle size={22} />
           <span>
-            ملاحظة: السندات تمنع القيد الخاطئ مثل الصندوق ضد الصندوق، وتعرض
-            القيد المتوقع قبل الحفظ.
+            ملاحظة: السندات محفوظة الآن في قاعدة البيانات، والقيد المتوقع يظهر
+            للمراجعة قبل الحفظ.
           </span>
         </div>
       </div>

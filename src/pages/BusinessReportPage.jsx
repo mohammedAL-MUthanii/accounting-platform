@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   BarChart3,
   ShoppingCart,
@@ -10,248 +10,354 @@ import {
   Building2,
   TrendingUp,
   AlertCircle,
+  RefreshCcw,
 } from "lucide-react";
 
-const PRODUCTS_KEY = "products";
-const SALES_KEYS = ["mohasbti_sales_invoices", "salesInvoices"];
-const PURCHASES_KEY = "purchaseInvoices";
-const VOUCHERS_KEY = "vouchers";
+import AppToast from "../components/AppToast";
+import { getAuthToken } from "../utils/auth";
 
-function readArray(key) {
-  try {
-    const raw = localStorage.getItem(key);
-    const data = JSON.parse(raw);
-    return Array.isArray(data) ? data : [];
-  } catch {
-    return [];
-  }
-}
+const API_BASE_URL = "http://127.0.0.1:8000/api";
 
 function formatCurrency(value) {
   return `${Number(value || 0).toLocaleString()} ريال`;
 }
 
-function getSalesInvoices() {
-  const allInvoices = [];
-
-  SALES_KEYS.forEach((key) => {
-    readArray(key).forEach((invoice) => {
-      allInvoices.push(invoice);
-    });
-  });
-
-  const uniqueMap = new Map();
-
-  allInvoices.forEach((invoice, index) => {
-    const id = invoice.id ?? `${invoice.number ?? invoice.invoiceNumber ?? index}`;
-    uniqueMap.set(String(id), invoice);
-  });
-
-  return Array.from(uniqueMap.values());
+function formatDate(value) {
+  return String(value || "").slice(0, 10);
 }
 
-function getSaleTotal(invoice) {
-  return (
-    invoice.totals?.net ??
-    invoice.total ??
-    invoice.netTotal ??
-    invoice.grossTotal ??
-    0
-  );
+function getPaymentLabel(type) {
+  if (type === "cash") return "نقدًا";
+  if (type === "credit") return "آجل";
+  return type || "-";
 }
 
-function getSaleProfit(invoice) {
-  if (invoice.profit !== undefined) return Number(invoice.profit);
+function normalizeProduct(product) {
+  const quantity = Number(product.quantity ?? 0);
+  const costPrice = Number(product.cost_price ?? 0);
+  const salePrice = Number(product.sale_price ?? 0);
 
-  const items = invoice.lines || invoice.items || [];
-
-  return items.reduce((sum, item) => {
-    const qty = Number(item.qty ?? item.quantity ?? 0);
-    const unitPrice = Number(item.unitPrice ?? item.sellingPrice ?? 0);
-    const costPrice = Number(item.costPrice ?? item.purchasePrice ?? 0);
-    const discountPercent = Number(item.discountPercent ?? 0);
-    const discountValue = Number(item.discountValue ?? 0);
-
-    const gross = qty * unitPrice;
-    const discount = gross * (discountPercent / 100) + discountValue;
-    const net = gross - discount;
-    const cost = qty * costPrice;
-
-    return sum + (net - cost);
-  }, 0);
+  return {
+    id: product.id,
+    code: product.code,
+    name: product.name,
+    category: product.category,
+    quantity,
+    costPrice,
+    salePrice,
+  };
 }
 
-function getPaymentType(invoice) {
-  return invoice.paymentMethod ?? invoice.paymentType ?? "";
+function normalizeSalesInvoice(invoice) {
+  return {
+    id: invoice.id,
+    number: invoice.id,
+    date: formatDate(invoice.invoice_date || invoice.created_at),
+    customerName: invoice.customer_name || "عميل نقدي",
+    paymentType: invoice.payment_type || "cash",
+    total: Number(invoice.net_total || 0),
+    grossTotal: Number(invoice.gross_total || 0),
+    discountTotal: Number(invoice.discount_total || 0),
+    profit: Number(invoice.profit_total || 0),
+    items: Array.isArray(invoice.items) ? invoice.items : [],
+  };
 }
 
-function getCustomerName(invoice) {
-  return invoice.customerName ?? "عميل نقدي";
+function normalizePurchaseInvoice(invoice) {
+  return {
+    id: invoice.id,
+    number: invoice.id,
+    date: formatDate(invoice.invoice_date || invoice.created_at),
+    supplierName: invoice.supplier_name || "مورد غير محدد",
+    paymentType: invoice.payment_type || "cash",
+    total: Number(invoice.total || 0),
+    items: Array.isArray(invoice.items) ? invoice.items : [],
+  };
 }
 
-function getPurchaseTotal(invoice) {
-  return Number(invoice.total ?? 0);
+function normalizeVoucher(voucher) {
+  return {
+    id: voucher.id,
+    number: voucher.id,
+    type: voucher.type,
+    date: formatDate(voucher.voucher_date || voucher.created_at),
+    partyName: voucher.party_name || "غير محدد",
+    accountName: voucher.account_name || "",
+    paymentMethod: voucher.payment_method || "الصندوق",
+    amount: Number(voucher.amount || 0),
+    description: voucher.description || "",
+  };
 }
 
 function BusinessReportPage() {
-  const report = useMemo(() => {
-    const products = readArray(PRODUCTS_KEY);
-    const salesInvoices = getSalesInvoices();
-    const purchaseInvoices = readArray(PURCHASES_KEY);
-    const vouchers = readArray(VOUCHERS_KEY);
+  const [products, setProducts] = useState([]);
+  const [salesInvoices, setSalesInvoices] = useState([]);
+  const [purchaseInvoices, setPurchaseInvoices] = useState([]);
+  const [vouchers, setVouchers] = useState([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [toast, setToast] = useState(null);
 
+  useEffect(() => {
+    loadReportData();
+  }, []);
+
+  function showToast(message, type = "success") {
+    setToast({ message, type });
+
+    setTimeout(() => {
+      setToast(null);
+    }, 3500);
+  }
+
+  async function loadReportData() {
+    setIsLoading(true);
+
+    try {
+      const token = getAuthToken();
+
+      const [
+        productsResponse,
+        salesResponse,
+        purchasesResponse,
+        vouchersResponse,
+      ] = await Promise.all([
+        fetch(`${API_BASE_URL}/products`, {
+          headers: {
+            Accept: "application/json",
+            Authorization: `Bearer ${token}`,
+          },
+        }),
+        fetch(`${API_BASE_URL}/sales-invoices`, {
+          headers: {
+            Accept: "application/json",
+            Authorization: `Bearer ${token}`,
+          },
+        }),
+        fetch(`${API_BASE_URL}/purchase-invoices`, {
+          headers: {
+            Accept: "application/json",
+            Authorization: `Bearer ${token}`,
+          },
+        }),
+        fetch(`${API_BASE_URL}/vouchers`, {
+          headers: {
+            Accept: "application/json",
+            Authorization: `Bearer ${token}`,
+          },
+        }),
+      ]);
+
+      const productsData = await productsResponse.json();
+      const salesData = await salesResponse.json();
+      const purchasesData = await purchasesResponse.json();
+      const vouchersData = await vouchersResponse.json();
+
+      if (!productsResponse.ok) {
+        showToast(productsData.message || "تعذر تحميل بيانات المنتجات.", "error");
+      }
+
+      if (!salesResponse.ok) {
+        showToast(salesData.message || "تعذر تحميل فواتير المبيعات.", "error");
+      }
+
+      if (!purchasesResponse.ok) {
+        showToast(
+          purchasesData.message || "تعذر تحميل فواتير المشتريات.",
+          "error"
+        );
+      }
+
+      if (!vouchersResponse.ok) {
+        showToast(vouchersData.message || "تعذر تحميل السندات.", "error");
+      }
+
+      setProducts(
+        Array.isArray(productsData.products)
+          ? productsData.products.map(normalizeProduct)
+          : []
+      );
+
+      setSalesInvoices(
+        Array.isArray(salesData.sales_invoices)
+          ? salesData.sales_invoices.map(normalizeSalesInvoice)
+          : []
+      );
+
+      setPurchaseInvoices(
+        Array.isArray(purchasesData.purchase_invoices)
+          ? purchasesData.purchase_invoices.map(normalizePurchaseInvoice)
+          : []
+      );
+
+      setVouchers(
+        Array.isArray(vouchersData.vouchers)
+          ? vouchersData.vouchers.map(normalizeVoucher)
+          : []
+      );
+    } catch {
+      showToast(
+        "تعذر الاتصال بالسيرفر. تأكد أن Laravel يعمل على http://127.0.0.1:8000",
+        "error"
+      );
+    }
+
+    setIsLoading(false);
+  }
+
+  const report = useMemo(() => {
     const totalSales = salesInvoices.reduce((sum, invoice) => {
-      return sum + Number(getSaleTotal(invoice));
+      return sum + Number(invoice.total || 0);
     }, 0);
 
     const totalSalesProfit = salesInvoices.reduce((sum, invoice) => {
-      return sum + Number(getSaleProfit(invoice));
+      return sum + Number(invoice.profit || 0);
     }, 0);
 
     const totalPurchases = purchaseInvoices.reduce((sum, invoice) => {
-      return sum + getPurchaseTotal(invoice);
+      return sum + Number(invoice.total || 0);
     }, 0);
 
     const totalStockValue = products.reduce((sum, product) => {
-      const quantity = Number(product.quantity ?? product.stock ?? 0);
-      const cost = Number(product.purchasePrice ?? product.costPrice ?? 0);
-      return sum + quantity * cost;
+      return sum + Number(product.quantity) * Number(product.costPrice);
     }, 0);
 
     const totalExpectedStockSales = products.reduce((sum, product) => {
-      const quantity = Number(product.quantity ?? product.stock ?? 0);
-      const sellingPrice = Number(product.sellingPrice ?? product.salePrice ?? 0);
-      return sum + quantity * sellingPrice;
+      return sum + Number(product.quantity) * Number(product.salePrice);
     }, 0);
 
-    const totalExpectedStockProfit = totalExpectedStockSales - totalStockValue;
+    const totalExpectedStockProfit =
+      totalExpectedStockSales - totalStockValue;
 
-    const receiptVouchers = vouchers.filter((voucher) => voucher.type === "receipt");
-    const paymentVouchers = vouchers.filter((voucher) => voucher.type === "payment");
+    const cashSales = salesInvoices
+      .filter((invoice) => invoice.paymentType === "cash")
+      .reduce((sum, invoice) => sum + Number(invoice.total || 0), 0);
 
-    const totalReceipts = receiptVouchers.reduce((sum, voucher) => {
-      return sum + Number(voucher.amount || 0);
+    const creditSales = salesInvoices
+      .filter((invoice) => invoice.paymentType === "credit")
+      .reduce((sum, invoice) => sum + Number(invoice.total || 0), 0);
+
+    const cashPurchases = purchaseInvoices
+      .filter((invoice) => invoice.paymentType === "cash")
+      .reduce((sum, invoice) => sum + Number(invoice.total || 0), 0);
+
+    const creditPurchases = purchaseInvoices
+      .filter((invoice) => invoice.paymentType === "credit")
+      .reduce((sum, invoice) => sum + Number(invoice.total || 0), 0);
+
+    const totalReceipts = vouchers
+      .filter((voucher) => voucher.type === "receipt")
+      .reduce((sum, voucher) => sum + Number(voucher.amount || 0), 0);
+
+    const totalPayments = vouchers
+      .filter((voucher) => voucher.type === "payment")
+      .reduce((sum, voucher) => sum + Number(voucher.amount || 0), 0);
+
+    const netCashMovement = totalReceipts - totalPayments;
+
+    const totalSoldItems = salesInvoices.reduce((sum, invoice) => {
+      return sum + invoice.items.length;
     }, 0);
 
-    const totalPayments = paymentVouchers.reduce((sum, voucher) => {
-      return sum + Number(voucher.amount || 0);
+    const totalPurchasedItems = purchaseInvoices.reduce((sum, invoice) => {
+      return sum + invoice.items.length;
     }, 0);
 
-    const creditSales = salesInvoices.filter((invoice) => {
-      const paymentType = getPaymentType(invoice);
-      return (
-        paymentType === "credit" ||
-        paymentType === "آجل" ||
-        paymentType === "آجل / على الحساب"
-      );
+    const lowStockProducts = products.filter((product) => {
+      return Number(product.quantity) <= 5;
     });
 
-    const creditPurchases = purchaseInvoices.filter((invoice) => {
-      const paymentType = invoice.paymentType ?? "";
-      return paymentType === "credit" || paymentType === "آجل";
-    });
+    const topSalesInvoices = [...salesInvoices]
+      .sort((a, b) => Number(b.total) - Number(a.total))
+      .slice(0, 5);
+
+    const latestPurchases = [...purchaseInvoices]
+      .sort((a, b) => Number(b.id) - Number(a.id))
+      .slice(0, 5);
+
+    const latestSales = [...salesInvoices]
+      .sort((a, b) => Number(b.id) - Number(a.id))
+      .slice(0, 5);
+
+    const latestVouchers = [...vouchers]
+      .sort((a, b) => Number(b.id) - Number(a.id))
+      .slice(0, 5);
 
     const customersMap = {};
     const suppliersMap = {};
 
-    creditSales.forEach((invoice, index) => {
-      const name = getCustomerName(invoice);
-      const amount = Number(getSaleTotal(invoice));
+    salesInvoices
+      .filter((invoice) => invoice.paymentType === "credit")
+      .forEach((invoice) => {
+        const name = invoice.customerName || "عميل غير محدد";
 
-      if (!customersMap[name]) {
-        customersMap[name] = {
-          name,
-          debit: 0,
-          credit: 0,
-        };
-      }
-
-      customersMap[name].debit += amount;
-    });
-
-    creditPurchases.forEach((invoice) => {
-      const name = invoice.supplierName ?? "مورد غير محدد";
-      const amount = Number(invoice.total || 0);
-
-      if (!suppliersMap[name]) {
-        suppliersMap[name] = {
-          name,
-          debit: 0,
-          credit: 0,
-        };
-      }
-
-      suppliersMap[name].credit += amount;
-    });
-
-    vouchers.forEach((voucher) => {
-      const amount = Number(voucher.amount || 0);
-      const partyName = voucher.partyName || "غير محدد";
-
-      if (voucher.type === "receipt") {
-        if (!customersMap[partyName]) {
-          customersMap[partyName] = {
-            name: partyName,
-            debit: 0,
-            credit: 0,
+        if (!customersMap[name]) {
+          customersMap[name] = {
+            name,
+            balance: 0,
           };
         }
 
-        customersMap[partyName].credit += amount;
+        customersMap[name].balance += Number(invoice.total || 0);
+      });
+
+    purchaseInvoices
+      .filter((invoice) => invoice.paymentType === "credit")
+      .forEach((invoice) => {
+        const name = invoice.supplierName || "مورد غير محدد";
+
+        if (!suppliersMap[name]) {
+          suppliersMap[name] = {
+            name,
+            balance: 0,
+          };
+        }
+
+        suppliersMap[name].balance += Number(invoice.total || 0);
+      });
+
+    vouchers.forEach((voucher) => {
+      if (voucher.type === "receipt") {
+        const name = voucher.partyName || "عميل غير محدد";
+
+        if (!customersMap[name]) {
+          customersMap[name] = {
+            name,
+            balance: 0,
+          };
+        }
+
+        customersMap[name].balance -= Number(voucher.amount || 0);
       }
 
       if (voucher.type === "payment") {
-        if (!suppliersMap[partyName]) {
-          suppliersMap[partyName] = {
-            name: partyName,
-            debit: 0,
-            credit: 0,
+        const name = voucher.partyName || "مورد غير محدد";
+
+        if (!suppliersMap[name]) {
+          suppliersMap[name] = {
+            name,
+            balance: 0,
           };
         }
 
-        suppliersMap[partyName].debit += amount;
+        suppliersMap[name].balance -= Number(voucher.amount || 0);
       }
     });
 
-    const customers = Object.values(customersMap);
-    const suppliers = Object.values(suppliersMap);
+    const customers = Object.values(customersMap).filter((customer) => {
+      return Number(customer.balance) !== 0;
+    });
+
+    const suppliers = Object.values(suppliersMap).filter((supplier) => {
+      return Number(supplier.balance) !== 0;
+    });
 
     const customersBalance = customers.reduce((sum, customer) => {
-      return sum + Math.max(customer.debit - customer.credit, 0);
+      return sum + Math.max(Number(customer.balance || 0), 0);
     }, 0);
 
     const suppliersBalance = suppliers.reduce((sum, supplier) => {
-      return sum + Math.max(supplier.credit - supplier.debit, 0);
+      return sum + Math.max(Number(supplier.balance || 0), 0);
     }, 0);
-
-    const lowStockProducts = products.filter((product) => {
-      const quantity = Number(product.quantity ?? product.stock ?? 0);
-      return quantity <= 5;
-    });
-
-    const topSalesInvoices = [...salesInvoices]
-      .map((invoice, index) => ({
-        id: invoice.id ?? `sale-${index}`,
-        number: invoice.invoiceNumber ?? invoice.number ?? index + 1,
-        date: invoice.date,
-        customerName: getCustomerName(invoice),
-        amount: Number(getSaleTotal(invoice)),
-        profit: Number(getSaleProfit(invoice)),
-      }))
-      .sort((a, b) => b.amount - a.amount)
-      .slice(0, 5);
-
-    const latestPurchases = [...purchaseInvoices]
-      .map((invoice, index) => ({
-        id: invoice.id ?? `purchase-${index}`,
-        number: invoice.number ?? index + 1,
-        date: invoice.date,
-        supplierName: invoice.supplierName ?? "مورد غير محدد",
-        amount: Number(invoice.total || 0),
-        paymentType: invoice.paymentType,
-      }))
-      .sort((a, b) => Number(b.number) - Number(a.number))
-      .slice(0, 5);
 
     return {
       products,
@@ -264,18 +370,26 @@ function BusinessReportPage() {
       totalStockValue,
       totalExpectedStockSales,
       totalExpectedStockProfit,
+      cashSales,
+      creditSales,
+      cashPurchases,
+      creditPurchases,
       totalReceipts,
       totalPayments,
-      netCashMovement: totalReceipts - totalPayments,
-      customersBalance,
-      suppliersBalance,
+      netCashMovement,
+      totalSoldItems,
+      totalPurchasedItems,
       lowStockProducts,
       topSalesInvoices,
       latestPurchases,
+      latestSales,
+      latestVouchers,
       customers,
       suppliers,
+      customersBalance,
+      suppliersBalance,
     };
-  }, []);
+  }, [products, salesInvoices, purchaseInvoices, vouchers]);
 
   const businessNetResult = report.totalSalesProfit;
 
@@ -286,8 +400,8 @@ function BusinessReportPage() {
           <div>
             <h1 className="section-title">تقرير النشاط التجاري</h1>
             <p className="section-subtitle">
-              ملخص شامل يجمع المبيعات، المشتريات، المخزون، السندات، وأرصدة
-              العملاء والموردين في صفحة واحدة.
+              ملخص مباشر من قاعدة بيانات Laravel يجمع المبيعات، المشتريات،
+              المخزون، السندات، وأرصدة العملاء والموردين.
             </p>
           </div>
 
@@ -302,6 +416,18 @@ function BusinessReportPage() {
               <strong>{formatCurrency(report.totalStockValue)}</strong>
             </div>
           </div>
+        </div>
+
+        <div className="business-report-actions">
+          <button
+            type="button"
+            className="secondary-btn"
+            onClick={loadReportData}
+            disabled={isLoading}
+          >
+            <RefreshCcw size={18} />
+            {isLoading ? "جاري التحديث..." : "تحديث التقرير من السيرفر"}
+          </button>
         </div>
 
         <div className="business-main-grid">
@@ -338,17 +464,37 @@ function BusinessReportPage() {
           <div className="business-panel">
             <div className="business-panel-title">
               <Wallet size={22} />
-              <h2>حركة النقد والسندات</h2>
+              <h2>تحليل النقد والآجل</h2>
             </div>
 
             <div className="business-mini-grid">
               <div>
-                <span>سندات القبض</span>
+                <span>مبيعات نقدية</span>
+                <strong>{formatCurrency(report.cashSales)}</strong>
+              </div>
+
+              <div>
+                <span>مبيعات آجلة</span>
+                <strong>{formatCurrency(report.creditSales)}</strong>
+              </div>
+
+              <div>
+                <span>مشتريات نقدية</span>
+                <strong>{formatCurrency(report.cashPurchases)}</strong>
+              </div>
+
+              <div>
+                <span>مشتريات آجلة</span>
+                <strong>{formatCurrency(report.creditPurchases)}</strong>
+              </div>
+
+              <div>
+                <span>سندات قبض</span>
                 <strong>{formatCurrency(report.totalReceipts)}</strong>
               </div>
 
               <div>
-                <span>سندات الصرف</span>
+                <span>سندات صرف</span>
                 <strong>{formatCurrency(report.totalPayments)}</strong>
               </div>
 
@@ -383,8 +529,13 @@ function BusinessReportPage() {
               </div>
 
               <div>
-                <span>عدد الجهات</span>
-                <strong>{report.customers.length + report.suppliers.length}</strong>
+                <span>عدد العملاء الآجل</span>
+                <strong>{report.customers.length}</strong>
+              </div>
+
+              <div>
+                <span>عدد الموردين الآجل</span>
+                <strong>{report.suppliers.length}</strong>
               </div>
             </div>
           </div>
@@ -411,6 +562,11 @@ function BusinessReportPage() {
               <div>
                 <span>ربح المخزون المتوقع</span>
                 <strong>{formatCurrency(report.totalExpectedStockProfit)}</strong>
+              </div>
+
+              <div>
+                <span>منتجات منخفضة</span>
+                <strong>{report.lowStockProducts.length}</strong>
               </div>
             </div>
 
@@ -446,6 +602,16 @@ function BusinessReportPage() {
                 <span>عدد السندات</span>
                 <strong>{report.vouchers.length}</strong>
               </div>
+
+              <div>
+                <span>عدد أصناف البيع</span>
+                <strong>{report.totalSoldItems}</strong>
+              </div>
+
+              <div>
+                <span>عدد أصناف الشراء</span>
+                <strong>{report.totalPurchasedItems}</strong>
+              </div>
             </div>
           </div>
         </div>
@@ -467,6 +633,7 @@ function BusinessReportPage() {
                       <th>رقم</th>
                       <th>التاريخ</th>
                       <th>العميل</th>
+                      <th>الدفع</th>
                       <th>الصافي</th>
                       <th>الربح</th>
                     </tr>
@@ -478,7 +645,8 @@ function BusinessReportPage() {
                         <td>#{invoice.number}</td>
                         <td>{invoice.date}</td>
                         <td>{invoice.customerName}</td>
-                        <td>{formatCurrency(invoice.amount)}</td>
+                        <td>{getPaymentLabel(invoice.paymentType)}</td>
+                        <td>{formatCurrency(invoice.total)}</td>
                         <td>
                           <strong
                             className={
@@ -523,9 +691,9 @@ function BusinessReportPage() {
                         <td>#{invoice.number}</td>
                         <td>{invoice.date}</td>
                         <td>{invoice.supplierName}</td>
-                        <td>{invoice.paymentType === "credit" ? "آجل" : "نقدًا"}</td>
+                        <td>{getPaymentLabel(invoice.paymentType)}</td>
                         <td>
-                          <strong>{formatCurrency(invoice.amount)}</strong>
+                          <strong>{formatCurrency(invoice.total)}</strong>
                         </td>
                       </tr>
                     ))}
@@ -535,7 +703,159 @@ function BusinessReportPage() {
             )}
           </div>
         </div>
+
+        <div className="business-tables-grid">
+          <div className="business-panel">
+            <div className="business-panel-title">
+              <ShoppingCart size={22} />
+              <h2>آخر فواتير البيع</h2>
+            </div>
+
+            {report.latestSales.length === 0 ? (
+              <p className="empty-text">لا توجد فواتير بيع حتى الآن.</p>
+            ) : (
+              <div className="table-wrapper">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>رقم</th>
+                      <th>التاريخ</th>
+                      <th>العميل</th>
+                      <th>الدفع</th>
+                      <th>الصافي</th>
+                    </tr>
+                  </thead>
+
+                  <tbody>
+                    {report.latestSales.map((invoice) => (
+                      <tr key={invoice.id}>
+                        <td>#{invoice.number}</td>
+                        <td>{invoice.date}</td>
+                        <td>{invoice.customerName}</td>
+                        <td>{getPaymentLabel(invoice.paymentType)}</td>
+                        <td>
+                          <strong>{formatCurrency(invoice.total)}</strong>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+
+          <div className="business-panel">
+            <div className="business-panel-title">
+              <Building2 size={22} />
+              <h2>أرصدة الجهات الآجلة</h2>
+            </div>
+
+            {report.customers.length === 0 && report.suppliers.length === 0 ? (
+              <p className="empty-text">
+                لا توجد فواتير آجلة للعملاء أو الموردين حتى الآن.
+              </p>
+            ) : (
+              <div className="business-mini-grid">
+                {report.customers.map((customer) => (
+                  <div key={`customer-${customer.name}`}>
+                    <span>عميل: {customer.name}</span>
+                    <strong>{formatCurrency(customer.balance)}</strong>
+                  </div>
+                ))}
+
+                {report.suppliers.map((supplier) => (
+                  <div key={`supplier-${supplier.name}`}>
+                    <span>مورد: {supplier.name}</span>
+                    <strong>{formatCurrency(supplier.balance)}</strong>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+
+        <div className="business-tables-grid">
+          <div className="business-panel">
+            <div className="business-panel-title">
+              <Receipt size={22} />
+              <h2>آخر السندات</h2>
+            </div>
+
+            {report.latestVouchers.length === 0 ? (
+              <p className="empty-text">لا توجد سندات حتى الآن.</p>
+            ) : (
+              <div className="table-wrapper">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>رقم</th>
+                      <th>التاريخ</th>
+                      <th>النوع</th>
+                      <th>الجهة</th>
+                      <th>الحساب</th>
+                      <th>المبلغ</th>
+                    </tr>
+                  </thead>
+
+                  <tbody>
+                    {report.latestVouchers.map((voucher) => (
+                      <tr key={voucher.id}>
+                        <td>#{voucher.number}</td>
+                        <td>{voucher.date}</td>
+                        <td>
+                          {voucher.type === "receipt" ? "سند قبض" : "سند صرف"}
+                        </td>
+                        <td>{voucher.partyName}</td>
+                        <td>{voucher.accountName}</td>
+                        <td>
+                          <strong>{formatCurrency(voucher.amount)}</strong>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+
+          <div className="business-panel">
+            <div className="business-panel-title">
+              <Wallet size={22} />
+              <h2>ملخص السندات</h2>
+            </div>
+
+            <div className="business-mini-grid">
+              <div>
+                <span>إجمالي سندات القبض</span>
+                <strong>{formatCurrency(report.totalReceipts)}</strong>
+              </div>
+
+              <div>
+                <span>إجمالي سندات الصرف</span>
+                <strong>{formatCurrency(report.totalPayments)}</strong>
+              </div>
+
+              <div>
+                <span>صافي السندات</span>
+                <strong
+                  className={
+                    report.netCashMovement >= 0 ? "good-text" : "bad-text"
+                  }
+                >
+                  {formatCurrency(report.netCashMovement)}
+                </strong>
+              </div>
+
+              <div>
+                <span>عدد السندات</span>
+                <strong>{report.vouchers.length}</strong>
+              </div>
+            </div>
+          </div>
+        </div>
       </div>
+
+      <AppToast toast={toast} onClose={() => setToast(null)} />
     </div>
   );
 }

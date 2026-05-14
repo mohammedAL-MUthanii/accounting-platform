@@ -9,118 +9,19 @@ import {
   Search,
   Boxes,
   TrendingUp,
+  RefreshCcw,
 } from "lucide-react";
 
 import AppToast from "../components/AppToast";
 import AppConfirm from "../components/AppConfirm";
+import { getAuthToken } from "../utils/auth";
 
-const productTemplates = [
-  { name: "كيبورد لاسلكي", category: "ملحقات كمبيوتر", min: 2500, max: 7000 },
-  { name: "كيبورد ميكانيكي", category: "ملحقات كمبيوتر", min: 7000, max: 24000 },
-  { name: "ماوس Gaming", category: "ملحقات كمبيوتر", min: 1800, max: 6500 },
-  { name: "ماوس لاسلكي", category: "ملحقات كمبيوتر", min: 1500, max: 5500 },
-  { name: "سماعة رأس", category: "صوتيات", min: 3500, max: 18000 },
-  { name: "سماعات بلوتوث", category: "صوتيات", min: 4500, max: 25000 },
-  { name: "ميكروفون USB", category: "صوتيات", min: 9000, max: 40000 },
-  { name: "فلاش USB 32GB", category: "تخزين", min: 1000, max: 3500 },
-  { name: "فلاش USB 64GB", category: "تخزين", min: 1500, max: 5000 },
-  { name: "فلاش USB 128GB", category: "تخزين", min: 2500, max: 8500 },
-  { name: "هارد خارجي 1TB", category: "تخزين", min: 28000, max: 65000 },
-  { name: "هارد خارجي 2TB", category: "تخزين", min: 48000, max: 95000 },
-  { name: "SSD 256GB", category: "تخزين", min: 13000, max: 32000 },
-  { name: "SSD 512GB", category: "تخزين", min: 22000, max: 58000 },
-  { name: "SSD 1TB", category: "تخزين", min: 42000, max: 110000 },
-  { name: "RAM 8GB", category: "قطع كمبيوتر", min: 12000, max: 35000 },
-  { name: "RAM 16GB", category: "قطع كمبيوتر", min: 22000, max: 65000 },
-  { name: "كرت شاشة اقتصادي", category: "قطع كمبيوتر", min: 65000, max: 160000 },
-  { name: "معالج Core i5", category: "قطع كمبيوتر", min: 75000, max: 180000 },
-  { name: "لوحة أم", category: "قطع كمبيوتر", min: 35000, max: 120000 },
-  { name: "شاحن Type-C", category: "شواحن وكابلات", min: 1800, max: 6000 },
-  { name: "شاحن سريع", category: "شواحن وكابلات", min: 3500, max: 12000 },
-  { name: "كابل HDMI", category: "شواحن وكابلات", min: 900, max: 4500 },
-  { name: "كابل Type-C", category: "شواحن وكابلات", min: 700, max: 3500 },
-  { name: "كابل شبكة", category: "شواحن وكابلات", min: 800, max: 5000 },
-  { name: "باور بانك", category: "شواحن وكابلات", min: 6000, max: 25000 },
-  { name: "شاشة 22 بوصة", category: "شاشات", min: 30000, max: 70000 },
-  { name: "شاشة 24 بوصة", category: "شاشات", min: 38000, max: 85000 },
-  { name: "شاشة 27 بوصة", category: "شاشات", min: 55000, max: 130000 },
-  { name: "طابعة صغيرة", category: "طابعات", min: 45000, max: 110000 },
-  { name: "حبر طابعة", category: "طابعات", min: 2500, max: 16000 },
-  { name: "راوتر منزلي", category: "شبكات", min: 8000, max: 28000 },
-  { name: "مقوي شبكة", category: "شبكات", min: 6000, max: 22000 },
-  { name: "سويتش شبكة", category: "شبكات", min: 7000, max: 35000 },
-  { name: "كاميرا ويب", category: "كاميرات", min: 7000, max: 30000 },
-  { name: "كاميرا مراقبة", category: "كاميرات", min: 12000, max: 65000 },
-  { name: "حامل لابتوب", category: "إكسسوارات", min: 2500, max: 12000 },
-  { name: "حقيبة لابتوب", category: "إكسسوارات", min: 3500, max: 16000 },
-  { name: "قارئ كروت", category: "إكسسوارات", min: 900, max: 4000 },
-  { name: "موزع USB", category: "إكسسوارات", min: 2500, max: 12000 },
-];
-
-const brands = [
-  "ProTech",
-  "SmartX",
-  "YemenTech",
-  "Nova",
-  "Ultra",
-  "Max",
-  "Speed",
-  "Eagle",
-  "Prime",
-  "Core",
-  "Future",
-  "Digital",
-  "Star",
-  "Alpha",
-  "Royal",
-];
-
-function randomBetween(min, max) {
-  return Math.floor(Math.random() * (max - min + 1)) + min;
-}
-
-function roundPrice(price) {
-  return Math.round(price / 100) * 100;
-}
-
-function createDemoProducts(count = 500) {
-  const products = [];
-
-  for (let i = 1; i <= count; i++) {
-    const template = productTemplates[(i - 1) % productTemplates.length];
-    const brand = brands[(i - 1) % brands.length];
-
-    const purchasePrice = roundPrice(randomBetween(template.min, template.max));
-    const profitRate = randomBetween(18, 45) / 100;
-    const sellingPrice = roundPrice(purchasePrice + purchasePrice * profitRate);
-    const quantity = randomBetween(3, 90);
-
-    products.push({
-      id: i,
-      code: `P-${1000 + i}`,
-      name: `${template.name} ${brand} موديل ${1000 + i}`,
-      category: template.category,
-
-      purchasePrice,
-      sellingPrice,
-      quantity,
-
-      costPrice: purchasePrice,
-      salePrice: sellingPrice,
-      stock: quantity,
-      unit: "قطعة",
-    });
-  }
-
-  return products;
-}
-
-const defaultProducts = createDemoProducts(500);
+const API_BASE_URL = "http://127.0.0.1:8000/api";
 
 function normalizeProduct(product) {
-  const purchasePrice = Number(product.purchasePrice ?? product.costPrice ?? 0);
-  const sellingPrice = Number(product.sellingPrice ?? product.salePrice ?? 0);
-  const quantity = Number(product.quantity ?? product.stock ?? 0);
+  const purchasePrice = Number(product.cost_price ?? product.purchasePrice ?? 0);
+  const sellingPrice = Number(product.sale_price ?? product.sellingPrice ?? 0);
+  const quantity = Number(product.quantity ?? 0);
 
   return {
     ...product,
@@ -139,21 +40,11 @@ function formatNumber(value) {
 }
 
 function InventoryPage() {
-  const [products, setProducts] = useState(() => {
-    try {
-      const savedProducts = localStorage.getItem("products");
-      const parsedProducts = savedProducts ? JSON.parse(savedProducts) : defaultProducts;
-
-      return Array.isArray(parsedProducts)
-        ? parsedProducts.map(normalizeProduct)
-        : defaultProducts;
-    } catch {
-      return defaultProducts;
-    }
-  });
-
+  const [products, setProducts] = useState([]);
   const [editingId, setEditingId] = useState(null);
   const [searchTerm, setSearchTerm] = useState("");
+  const [isLoading, setIsLoading] = useState(true);
+  const [isSaving, setIsSaving] = useState(false);
 
   const [toast, setToast] = useState(null);
   const [confirmState, setConfirmState] = useState({
@@ -175,9 +66,8 @@ function InventoryPage() {
   });
 
   useEffect(() => {
-    localStorage.setItem("products", JSON.stringify(products));
-    localStorage.setItem("mohasbti_products", JSON.stringify(products));
-  }, [products]);
+    loadProducts();
+  }, []);
 
   function showToast(message, type = "success") {
     setToast({ message, type });
@@ -187,7 +77,14 @@ function InventoryPage() {
     }, 3500);
   }
 
-  function openConfirm({ type, productId = null, title, message, confirmText, danger }) {
+  function openConfirm({
+    type,
+    productId = null,
+    title,
+    message,
+    confirmText,
+    danger,
+  }) {
     setConfirmState({
       open: true,
       type,
@@ -209,6 +106,42 @@ function InventoryPage() {
       confirmText: "موافق",
       danger: false,
     });
+  }
+
+  async function loadProducts() {
+    setIsLoading(true);
+
+    try {
+      const token = getAuthToken();
+
+      const response = await fetch(`${API_BASE_URL}/products`, {
+        headers: {
+          Accept: "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        showToast(data.message || "تعذر تحميل المنتجات من السيرفر.", "error");
+        setIsLoading(false);
+        return;
+      }
+
+      const normalizedProducts = Array.isArray(data.products)
+        ? data.products.map(normalizeProduct)
+        : [];
+
+      setProducts(normalizedProducts);
+    } catch {
+      showToast(
+        "تعذر الاتصال بالسيرفر. تأكد أن Laravel يعمل على http://127.0.0.1:8000",
+        "error"
+      );
+    }
+
+    setIsLoading(false);
   }
 
   function handleChange(e) {
@@ -257,60 +190,86 @@ function InventoryPage() {
     return true;
   }
 
-  function saveProduct(e) {
+  function makeProductPayload() {
+    const currentProduct = products.find((product) => product.id === editingId);
+
+    return {
+      code:
+        currentProduct?.code ||
+        `P-${Date.now().toString().slice(-6)}`,
+      name: form.name.trim(),
+      category: form.category.trim(),
+      cost_price: Number(form.purchasePrice),
+      sale_price: Number(form.sellingPrice),
+      quantity: Number(form.quantity),
+    };
+  }
+
+  async function saveProduct(e) {
     e.preventDefault();
 
     if (!validateForm()) return;
 
-    const productData = {
-      name: form.name.trim(),
-      category: form.category.trim(),
-      purchasePrice: Number(form.purchasePrice),
-      sellingPrice: Number(form.sellingPrice),
-      quantity: Number(form.quantity),
+    setIsSaving(true);
 
-      costPrice: Number(form.purchasePrice),
-      salePrice: Number(form.sellingPrice),
-      stock: Number(form.quantity),
-      unit: "قطعة",
-    };
+    try {
+      const token = getAuthToken();
+      const payload = makeProductPayload();
 
-    if (editingId) {
-      const updatedProducts = products.map((product) => {
-        if (product.id === editingId) {
-          return {
-            ...product,
-            ...productData,
-          };
-        }
+      const url = editingId
+        ? `${API_BASE_URL}/products/${editingId}`
+        : `${API_BASE_URL}/products`;
 
-        return product;
+      const method = editingId ? "PUT" : "POST";
+
+      const response = await fetch(url, {
+        method,
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify(payload),
       });
 
-      setProducts(updatedProducts);
+      const data = await response.json();
+
+      if (!response.ok) {
+        const firstError =
+          data?.errors?.code?.[0] ||
+          data?.errors?.name?.[0] ||
+          data?.errors?.category?.[0] ||
+          data?.errors?.cost_price?.[0] ||
+          data?.errors?.sale_price?.[0] ||
+          data?.errors?.quantity?.[0] ||
+          data?.message;
+
+        showToast(firstError || "تعذر حفظ المنتج.", "error");
+        setIsSaving(false);
+        return;
+      }
+
+      const normalizedProduct = normalizeProduct(data.product);
+
+      if (editingId) {
+        setProducts((prevProducts) =>
+          prevProducts.map((product) =>
+            product.id === editingId ? normalizedProduct : product
+          )
+        );
+
+        showToast(data.message || "تم تحديث المنتج بنجاح.");
+      } else {
+        setProducts((prevProducts) => [normalizedProduct, ...prevProducts]);
+        showToast(data.message || "تمت إضافة المنتج بنجاح.");
+      }
+
       resetForm();
-      showToast("تم تحديث المنتج بنجاح.");
-      return;
+    } catch {
+      showToast("تعذر الاتصال بالسيرفر أثناء حفظ المنتج.", "error");
     }
 
-    const isExisting = products.some((product) => {
-      return product.name.trim() === productData.name;
-    });
-
-    if (isExisting) {
-      showToast("هذا المنتج موجود بالفعل.", "warning");
-      return;
-    }
-
-    const newProduct = {
-      id: Date.now(),
-      code: `P-${Date.now().toString().slice(-5)}`,
-      ...productData,
-    };
-
-    setProducts([...products, newProduct]);
-    resetForm();
-    showToast("تمت إضافة المنتج بنجاح.");
+    setIsSaving(false);
   }
 
   function startEdit(product) {
@@ -318,7 +277,7 @@ function InventoryPage() {
 
     setForm({
       name: product.name,
-      category: product.category,
+      category: product.category || "",
       purchasePrice: product.purchasePrice,
       sellingPrice: product.sellingPrice,
       quantity: product.quantity,
@@ -345,58 +304,48 @@ function InventoryPage() {
     });
   }
 
-  function generateProducts() {
-    openConfirm({
-      type: "generate",
-      title: "توليد 500 منتج وهمي",
-      message:
-        "سيتم توليد 500 منتج وهمي جديد واستبدال قائمة المنتجات الحالية. هل تريد المتابعة؟",
-      confirmText: "توليد المنتجات",
-      danger: false,
-    });
-  }
+  async function confirmAction() {
+    if (confirmState.type !== "delete") return;
 
-  function resetProducts() {
-    openConfirm({
-      type: "reset",
-      title: "استعادة المنتجات الوهمية",
-      message:
-        "سيتم استعادة 500 منتج وهمي وحذف أي منتجات أضفتها أو عدلتها. هل تريد المتابعة؟",
-      confirmText: "استعادة المنتجات",
-      danger: true,
-    });
-  }
+    const product = products.find((item) => item.id === confirmState.productId);
 
-  function confirmAction() {
-    if (confirmState.type === "delete") {
-      const product = products.find((item) => item.id === confirmState.productId);
+    try {
+      const token = getAuthToken();
 
-      setProducts(products.filter((item) => item.id !== confirmState.productId));
+      const response = await fetch(
+        `${API_BASE_URL}/products/${confirmState.productId}`,
+        {
+          method: "DELETE",
+          headers: {
+            Accept: "application/json",
+            Authorization: `Bearer ${token}`,
+          },
+        }
+      );
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        showToast(data.message || "تعذر حذف المنتج.", "error");
+        closeConfirm();
+        return;
+      }
+
+      setProducts((prevProducts) =>
+        prevProducts.filter((item) => item.id !== confirmState.productId)
+      );
 
       if (editingId === confirmState.productId) {
         resetForm();
       }
 
       closeConfirm();
-      showToast(product ? `تم حذف المنتج "${product.name}" بنجاح.` : "تم حذف المنتج.");
-      return;
-    }
-
-    if (confirmState.type === "generate") {
-      setProducts(createDemoProducts(500));
-      resetForm();
-      setSearchTerm("");
+      showToast(
+        product ? `تم حذف المنتج "${product.name}" بنجاح.` : "تم حذف المنتج."
+      );
+    } catch {
       closeConfirm();
-      showToast("تم توليد 500 منتج وهمي بنجاح.");
-      return;
-    }
-
-    if (confirmState.type === "reset") {
-      setProducts(createDemoProducts(500));
-      resetForm();
-      setSearchTerm("");
-      closeConfirm();
-      showToast("تمت استعادة 500 منتج وهمي بنجاح.");
+      showToast("تعذر الاتصال بالسيرفر أثناء حذف المنتج.", "error");
     }
   }
 
@@ -405,7 +354,7 @@ function InventoryPage() {
 
     return (
       product.name.toLowerCase().includes(keyword) ||
-      product.category.toLowerCase().includes(keyword) ||
+      String(product.category ?? "").toLowerCase().includes(keyword) ||
       String(product.code ?? "").toLowerCase().includes(keyword)
     );
   });
@@ -420,7 +369,9 @@ function InventoryPage() {
 
   const expectedProfit = totalExpectedSales - totalStockValue;
 
-  const lowStockProducts = products.filter((product) => Number(product.quantity) <= 5);
+  const lowStockProducts = products.filter(
+    (product) => Number(product.quantity) <= 5
+  );
 
   return (
     <div className="page">
@@ -430,7 +381,7 @@ function InventoryPage() {
             <h1 className="section-title">المخزون والمنتجات</h1>
             <p className="section-subtitle">
               هنا تبدأ إدارة النشاط التجاري: أضف المنتجات، تابع الكميات، واحسب
-              قيمة المخزون والربح المتوقع.
+              قيمة المخزون والربح المتوقع من قاعدة بيانات Laravel.
             </p>
           </div>
 
@@ -535,24 +486,33 @@ function InventoryPage() {
               />
             </label>
 
-            <button className="primary-btn">
+            <button className="primary-btn" disabled={isSaving}>
               {editingId ? <Save size={18} /> : <Plus size={18} />}
-              {editingId ? "تحديث المنتج" : "إضافة المنتج"}
+              {isSaving
+                ? "جاري الحفظ..."
+                : editingId
+                ? "تحديث المنتج"
+                : "إضافة المنتج"}
             </button>
 
             {editingId && (
-              <button type="button" className="cancel-edit-btn" onClick={resetForm}>
+              <button
+                type="button"
+                className="cancel-edit-btn"
+                onClick={resetForm}
+              >
                 <XCircle size={18} />
                 إلغاء التعديل
               </button>
             )}
 
-            <button type="button" className="secondary-btn" onClick={generateProducts}>
-              توليد 500 منتج وهمي
-            </button>
-
-            <button type="button" className="secondary-btn" onClick={resetProducts}>
-              استعادة 500 منتج وهمي
+            <button
+              type="button"
+              className="secondary-btn"
+              onClick={loadProducts}
+            >
+              <RefreshCcw size={18} />
+              تحديث المنتجات من السيرفر
             </button>
           </form>
 
@@ -574,13 +534,18 @@ function InventoryPage() {
               </div>
             </div>
 
-            {filteredProducts.length === 0 ? (
-              <div className="empty-search">لا توجد منتجات مطابقة للبحث الحالي.</div>
+            {isLoading ? (
+              <div className="empty-search">جاري تحميل المنتجات من السيرفر...</div>
+            ) : filteredProducts.length === 0 ? (
+              <div className="empty-search">
+                لا توجد منتجات مطابقة للبحث الحالي.
+              </div>
             ) : (
               <div className="table-wrapper">
                 <table>
                   <thead>
                     <tr>
+                      <th>الكود</th>
                       <th>المنتج</th>
                       <th>التصنيف</th>
                       <th>سعر الشراء</th>
@@ -598,13 +563,16 @@ function InventoryPage() {
                         Number(product.purchasePrice) * Number(product.quantity);
 
                       const unitProfit =
-                        Number(product.sellingPrice) - Number(product.purchasePrice);
+                        Number(product.sellingPrice) -
+                        Number(product.purchasePrice);
 
                       return (
                         <tr
                           key={product.id}
                           className={editingId === product.id ? "editing-row" : ""}
                         >
+                          <td>{product.code}</td>
+
                           <td>
                             <strong>{product.name}</strong>
                           </td>

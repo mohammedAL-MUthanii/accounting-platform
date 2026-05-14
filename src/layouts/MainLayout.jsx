@@ -1,7 +1,4 @@
 import { useEffect, useState } from "react";
-import AppToast from "../components/AppToast";
-import AppConfirm from "../components/AppConfirm";
-import { getAndClearAppToast, setAppToast } from "../utils/notifications";
 import { NavLink, Outlet, useNavigate } from "react-router-dom";
 import {
   Home,
@@ -29,46 +26,53 @@ import {
   LogOut,
   ShieldCheck,
   UserRound,
+  LayoutDashboard,
 } from "lucide-react";
 
+import AppToast from "../components/AppToast";
+import AppConfirm from "../components/AppConfirm";
+import { getAndClearAppToast, setAppToast } from "../utils/notifications";
 import { getCurrentUser, logoutUser } from "../utils/auth";
 
 function MainLayout() {
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   const [toast, setToast] = useState(null);
-const [logoutConfirmOpen, setLogoutConfirmOpen] = useState(false);
+  const [logoutConfirmOpen, setLogoutConfirmOpen] = useState(false);
 
-useEffect(() => {
-  const savedToast = getAndClearAppToast();
-
-  if (savedToast) {
-    setToast(savedToast);
-
-    setTimeout(() => {
-      setToast(null);
-    }, 3500);
-  }
-}, []);
   const navigate = useNavigate();
 
   const currentUser = getCurrentUser();
   const isAdminUser = currentUser?.role === "admin";
+
+  useEffect(() => {
+    const savedToast = getAndClearAppToast();
+
+    if (savedToast) {
+      setToast(savedToast);
+
+      setTimeout(() => {
+        setToast(null);
+      }, 3500);
+    }
+  }, []);
 
   function closeMenu() {
     setIsMenuOpen(false);
   }
 
   function handleLogout() {
-  setLogoutConfirmOpen(true);
-}
+    setLogoutConfirmOpen(true);
+  }
 
-function confirmLogout() {
-  logoutUser();
-  closeMenu();
-  setAppToast("تم تسجيل الخروج بنجاح.", "success");
-  navigate("/login");
-  window.location.reload();
-}
+  async function confirmLogout() {
+    await logoutUser();
+
+    closeMenu();
+    setLogoutConfirmOpen(false);
+    setAppToast("تم تسجيل الخروج بنجاح.", "success");
+    navigate("/login");
+    window.location.reload();
+  }
 
   return (
     <div className="app">
@@ -77,18 +81,6 @@ function confirmLogout() {
           <NavLink to="/" className="logo" onClick={closeMenu}>
             <div className="logo-icon">
               <Calculator size={24} />
-              <AppToast toast={toast} onClose={() => setToast(null)} />
-
-<AppConfirm
-  open={logoutConfirmOpen}
-  title="تسجيل الخروج"
-  message="هل تريد تسجيل الخروج من منصة محاسبتي؟"
-  confirmText="نعم، خروج"
-  cancelText="إلغاء"
-  danger
-  onConfirm={confirmLogout}
-  onCancel={() => setLogoutConfirmOpen(false)}
-/>
             </div>
 
             <div>
@@ -100,7 +92,12 @@ function confirmLogout() {
           <div className="top-actions">
             {currentUser ? (
               <div className="user-chip">
-                {isAdminUser ? <ShieldCheck size={18} /> : <UserRound size={18} />}
+                {isAdminUser ? (
+                  <ShieldCheck size={18} />
+                ) : (
+                  <UserRound size={18} />
+                )}
+
                 <div>
                   <strong>{currentUser.name}</strong>
                   <span>{isAdminUser ? "أدمن" : "طالب"}</span>
@@ -179,6 +176,20 @@ function confirmLogout() {
 
               {isAdminUser && (
                 <>
+                  <div className="menu-section">
+                    <h3>لوحة التحكم</h3>
+
+                    <div className="menu-grid">
+                      <NavLink to="/admin-dashboard" onClick={closeMenu}>
+                        <LayoutDashboard size={22} />
+                        <div>
+                          <strong>لوحة التحكم</strong>
+                          <span>إدارة المستخدمين والصلاحيات</span>
+                        </div>
+                      </NavLink>
+                    </div>
+                  </div>
+
                   <div className="menu-section">
                     <h3>النظام التجاري</h3>
 
@@ -334,7 +345,7 @@ function confirmLogout() {
                   <h3>لم تسجل الدخول</h3>
                   <p>
                     تستطيع تصفح الصفحات التعليمية، وللوصول للنظام التجاري سجّل
-                    الدخول كأدمن.
+                    الدخول بحساب أدمن.
                   </p>
 
                   <NavLink to="/login" className="primary-btn" onClick={closeMenu}>
@@ -351,6 +362,19 @@ function confirmLogout() {
       <main>
         <Outlet />
       </main>
+
+      <AppToast toast={toast} onClose={() => setToast(null)} />
+
+      <AppConfirm
+        open={logoutConfirmOpen}
+        title="تسجيل الخروج"
+        message="هل تريد تسجيل الخروج من منصة محاسبتي؟"
+        confirmText="نعم، خروج"
+        cancelText="إلغاء"
+        danger
+        onConfirm={confirmLogout}
+        onCancel={() => setLogoutConfirmOpen(false)}
+      />
     </div>
   );
 }

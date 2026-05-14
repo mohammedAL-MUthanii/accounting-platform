@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   ShoppingBag,
   Search,
@@ -8,26 +8,14 @@ import {
   Building2,
   PackageCheck,
   Wallet,
+  RefreshCcw,
 } from "lucide-react";
 
 import AppToast from "../components/AppToast";
 import AppConfirm from "../components/AppConfirm";
+import { getAuthToken } from "../utils/auth";
 
-const PURCHASES_KEY = "purchaseInvoices";
-
-function readArray(key) {
-  try {
-    const raw = localStorage.getItem(key);
-    const data = JSON.parse(raw);
-    return Array.isArray(data) ? data : [];
-  } catch {
-    return [];
-  }
-}
-
-function saveArray(key, value) {
-  localStorage.setItem(key, JSON.stringify(value));
-}
+const API_BASE_URL = "http://127.0.0.1:8000/api";
 
 function formatCurrency(value) {
   return `${Number(value || 0).toLocaleString()} ريال`;
@@ -36,38 +24,41 @@ function formatCurrency(value) {
 function getPaymentLabel(type) {
   if (type === "cash") return "نقدًا";
   if (type === "credit") return "آجل";
-  return type;
+  return type || "-";
 }
 
-function normalizePurchaseInvoice(invoice, index) {
+function normalizePurchaseInvoice(invoice) {
+  const items = Array.isArray(invoice.items)
+    ? invoice.items.map((item) => ({
+        id: item.id,
+        productId: item.product_id,
+        productName: item.product?.name || "منتج غير معروف",
+        category: item.product?.category || "-",
+        quantity: Number(item.quantity || 0),
+        unitCost: Number(item.cost_price || 0),
+        total: Number(item.total || 0),
+      }))
+    : [];
+
   return {
-    id: invoice.id ?? `purchase-${index}`,
-    number: invoice.number ?? index + 1,
-    date: invoice.date ?? "",
-    supplierName: invoice.supplierName ?? "مورد غير محدد",
-    paymentType: invoice.paymentType ?? "cash",
-    description: invoice.description ?? "فاتورة شراء",
-    items: invoice.items || [],
+    id: invoice.id,
+    number: invoice.id,
+    date: invoice.invoice_date || invoice.created_at?.slice(0, 10) || "",
+    supplierName: invoice.supplier_name || "مورد غير محدد",
+    paymentType: invoice.payment_type || "cash",
+    description: "فاتورة شراء",
+    items,
     total: Number(invoice.total || 0),
-    createdAt: invoice.createdAt,
+    createdAt: invoice.created_at,
     original: invoice,
   };
-}
-
-function loadPurchaseInvoices() {
-  const invoices = readArray(PURCHASES_KEY);
-
-  return invoices
-    .map((invoice, index) => normalizePurchaseInvoice(invoice, index))
-    .sort((a, b) => Number(b.number) - Number(a.number));
 }
 
 function PurchaseInvoicesPage() {
   const [searchTerm, setSearchTerm] = useState("");
   const [selectedInvoiceId, setSelectedInvoiceId] = useState(null);
-  const [purchaseInvoices, setPurchaseInvoices] = useState(() =>
-    loadPurchaseInvoices()
-  );
+  const [purchaseInvoices, setPurchaseInvoices] = useState([]);
+  const [isLoading, setIsLoading] = useState(true);
 
   const [toast, setToast] = useState(null);
   const [confirmState, setConfirmState] = useState({
@@ -76,6 +67,54 @@ function PurchaseInvoicesPage() {
     title: "",
     message: "",
   });
+
+  useEffect(() => {
+    loadPurchaseInvoices();
+  }, []);
+
+  function showToast(message, type = "success") {
+    setToast({ message, type });
+
+    setTimeout(() => {
+      setToast(null);
+    }, 3500);
+  }
+
+  async function loadPurchaseInvoices() {
+    setIsLoading(true);
+
+    try {
+      const token = getAuthToken();
+
+      const response = await fetch(`${API_BASE_URL}/purchase-invoices`, {
+        headers: {
+          Accept: "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        showToast(data.message || "تعذر تحميل فواتير المشتريات.", "error");
+        setIsLoading(false);
+        return;
+      }
+
+      const normalizedInvoices = Array.isArray(data.purchase_invoices)
+        ? data.purchase_invoices.map(normalizePurchaseInvoice)
+        : [];
+
+      setPurchaseInvoices(normalizedInvoices);
+    } catch {
+      showToast(
+        "تعذر الاتصال بالسيرفر. تأكد أن Laravel يعمل على http://127.0.0.1:8000",
+        "error"
+      );
+    }
+
+    setIsLoading(false);
+  }
 
   const filteredInvoices = purchaseInvoices.filter((invoice) => {
     const keyword = searchTerm.trim().toLowerCase();
@@ -119,21 +158,13 @@ function PurchaseInvoicesPage() {
     };
   }, [purchaseInvoices]);
 
-  function showToast(message, type = "success") {
-    setToast({ message, type });
-
-    setTimeout(() => {
-      setToast(null);
-    }, 3500);
-  }
-
   function requestDeleteInvoice(invoice) {
     setConfirmState({
       open: true,
       invoice,
       title: `حذف فاتورة شراء رقم ${invoice.number}`,
       message:
-        "هل تريد حذف فاتورة الشراء؟ ملاحظة: لن يتم عكس أثرها من المخزون أو دفتر اليومية تلقائيًا.",
+        "هل تريد حذف فاتورة الشراء؟ ملاحظة: حذف الفاتورة لا ينقص المخزون تلقائيًا.",
     });
   }
 
@@ -146,7 +177,7 @@ function PurchaseInvoicesPage() {
     });
   }
 
-  function confirmDeleteInvoice() {
+  async function confirmDeleteInvoice() {
     const invoice = confirmState.invoice;
 
     if (!invoice) {
@@ -155,27 +186,44 @@ function PurchaseInvoicesPage() {
       return;
     }
 
-    const currentInvoices = readArray(PURCHASES_KEY);
+    try {
+      const token = getAuthToken();
 
-    const updatedInvoices = currentInvoices.filter((item, index) => {
-      const normalized = normalizePurchaseInvoice(item, index);
-      return String(normalized.id) !== String(invoice.id);
-    });
+      const response = await fetch(
+        `${API_BASE_URL}/purchase-invoices/${invoice.id}`,
+        {
+          method: "DELETE",
+          headers: {
+            Accept: "application/json",
+            Authorization: `Bearer ${token}`,
+          },
+        }
+      );
 
-    saveArray(PURCHASES_KEY, updatedInvoices);
+      const data = await response.json();
 
-    const updatedVisibleInvoices = purchaseInvoices.filter((item) => {
-      return String(item.id) !== String(invoice.id);
-    });
+      if (!response.ok) {
+        showToast(data.message || "تعذر حذف فاتورة الشراء.", "error");
+        cancelDeleteInvoice();
+        return;
+      }
 
-    setPurchaseInvoices(updatedVisibleInvoices);
+      const updatedVisibleInvoices = purchaseInvoices.filter((item) => {
+        return String(item.id) !== String(invoice.id);
+      });
 
-    if (String(selectedInvoiceId) === String(invoice.id)) {
-      setSelectedInvoiceId(null);
+      setPurchaseInvoices(updatedVisibleInvoices);
+
+      if (String(selectedInvoiceId) === String(invoice.id)) {
+        setSelectedInvoiceId(null);
+      }
+
+      cancelDeleteInvoice();
+      showToast(data.message || `تم حذف فاتورة الشراء رقم ${invoice.number}.`);
+    } catch {
+      cancelDeleteInvoice();
+      showToast("تعذر الاتصال بالسيرفر أثناء حذف فاتورة الشراء.", "error");
     }
-
-    cancelDeleteInvoice();
-    showToast(`تم حذف فاتورة الشراء رقم ${invoice.number} بنجاح.`);
   }
 
   return (
@@ -185,7 +233,7 @@ function PurchaseInvoicesPage() {
           <div>
             <h1 className="section-title">فواتير المشتريات</h1>
             <p className="section-subtitle">
-              هنا تظهر فواتير الشراء المحفوظة من صفحة المشتريات، مع تفاصيل
+              هنا تظهر فواتير الشراء المحفوظة في قاعدة بيانات Laravel، مع تفاصيل
               الموردين والأصناف والإجماليات.
             </p>
           </div>
@@ -237,6 +285,15 @@ function PurchaseInvoicesPage() {
                 <p>ابحث واعرض تفاصيل أي فاتورة شراء محفوظة.</p>
               </div>
 
+              <button
+                type="button"
+                className="secondary-btn"
+                onClick={loadPurchaseInvoices}
+              >
+                <RefreshCcw size={18} />
+                تحديث
+              </button>
+
               <div className="purchase-invoices-search">
                 <Search size={18} />
                 <input
@@ -248,7 +305,11 @@ function PurchaseInvoicesPage() {
               </div>
             </div>
 
-            {filteredInvoices.length === 0 ? (
+            {isLoading ? (
+              <div className="empty-search">
+                جاري تحميل فواتير المشتريات من السيرفر...
+              </div>
+            ) : filteredInvoices.length === 0 ? (
               <div className="empty-search">
                 لا توجد فواتير مشتريات مطابقة للبحث الحالي.
               </div>
@@ -398,7 +459,7 @@ function PurchaseInvoicesPage() {
                       {selectedInvoice.items.map((item, index) => {
                         const quantity = Number(item.quantity || 0);
                         const unitCost = Number(item.unitCost || 0);
-                        const lineTotal = quantity * unitCost;
+                        const lineTotal = Number(item.total || quantity * unitCost);
 
                         return (
                           <tr key={item.id ?? index}>

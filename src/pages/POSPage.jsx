@@ -1,126 +1,48 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { Plus, Trash2, Save, Search, Receipt } from "lucide-react";
+import {
+  Plus,
+  Trash2,
+  Save,
+  Search,
+  Receipt,
+  RefreshCcw,
+} from "lucide-react";
 
 import AppToast from "../components/AppToast";
 import AppConfirm from "../components/AppConfirm";
+import { getAuthToken } from "../utils/auth";
 
-const PRODUCT_STORAGE_KEYS = [
-  "mohasbti_products",
-  "accounting_products",
-  "products",
-];
+const API_BASE_URL = "http://127.0.0.1:8000/api";
 
-const INVOICES_KEY = "mohasbti_sales_invoices";
-const JOURNAL_KEY = "journalEntries";
-
-const demoProducts = [
-  {
-    id: 1,
-    code: "P-1001",
-    name: "كيبورد لاسلكي Max موديل 1321",
-    salePrice: 8400,
-    costPrice: 6200,
-    stock: 25,
-    unit: "قطعة",
-    category: "إلكترونيات",
-  },
-  {
-    id: 2,
-    code: "P-1002",
-    name: "ماوس ضوئي Pro موديل 450",
-    salePrice: 3200,
-    costPrice: 2100,
-    stock: 40,
-    unit: "قطعة",
-    category: "إلكترونيات",
-  },
-  {
-    id: 3,
-    code: "P-1003",
-    name: "شاشة اقتصادية YemenTech موديل 1018",
-    salePrice: 156000,
-    costPrice: 118000,
-    stock: 12,
-    unit: "قطعة",
-    category: "إلكترونيات",
-  },
-  {
-    id: 4,
-    code: "P-1004",
-    name: "هارد SSD سعة 512GB",
-    salePrice: 28500,
-    costPrice: 21400,
-    stock: 30,
-    unit: "قطعة",
-    category: "إلكترونيات",
-  },
-  {
-    id: 5,
-    code: "P-1005",
-    name: "سماعة رأس Comfort X",
-    salePrice: 9700,
-    costPrice: 6400,
-    stock: 20,
-    unit: "قطعة",
-    category: "إلكترونيات",
-  },
-];
-
-function readArray(key) {
-  try {
-    const raw = localStorage.getItem(key);
-    const data = JSON.parse(raw);
-    return Array.isArray(data) ? data : [];
-  } catch {
-    return [];
-  }
-}
-
-function writeArray(key, value) {
-  localStorage.setItem(key, JSON.stringify(value));
-}
-
-function getProductStorage() {
-  for (const key of PRODUCT_STORAGE_KEYS) {
-    const items = readArray(key);
-
-    if (items.length > 0) {
-      return { key, items };
-    }
-  }
-
-  writeArray(PRODUCT_STORAGE_KEYS[0], demoProducts);
-  return { key: PRODUCT_STORAGE_KEYS[0], items: demoProducts };
-}
-
-function normalizeProduct(product, index) {
-  const costPrice = Number(
-    product.costPrice ??
-      product.purchasePrice ??
-      product.cost ??
-      product.cost_price ??
-      0
-  );
-
-  const salePrice = Number(
-    product.salePrice ??
-      product.sellingPrice ??
-      product.price ??
-      product.sale_price ??
-      0
-  );
-
-  const stock = Number(product.stock ?? product.quantity ?? product.qty ?? 0);
+function normalizeProduct(product) {
+  const costPrice = Number(product.cost_price ?? product.costPrice ?? 0);
+  const salePrice = Number(product.sale_price ?? product.salePrice ?? 0);
+  const stock = Number(product.quantity ?? product.stock ?? 0);
 
   return {
-    id: product.id ?? index + 1,
-    code: product.code ?? `P-${product.id ?? index + 1000}`,
-    name: product.name ?? product.title ?? "منتج بدون اسم",
+    id: product.id,
+    code: product.code ?? `P-${product.id}`,
+    name: product.name ?? "منتج بدون اسم",
     salePrice,
     costPrice,
     stock,
     unit: product.unit ?? "قطعة",
     category: product.category ?? "عام",
+  };
+}
+
+function normalizeSalesInvoice(invoice) {
+  return {
+    id: invoice.id,
+    invoiceNumber: invoice.id,
+    date: invoice.invoice_date || invoice.created_at?.slice(0, 10),
+    customerName: invoice.customer_name,
+    paymentMethod: invoice.payment_type === "credit" ? "آجل" : "نقداً",
+    totals: {
+      gross: Number(invoice.gross_total || 0),
+      discount: Number(invoice.discount_total || 0),
+      net: Number(invoice.net_total || 0),
+    },
   };
 }
 
@@ -157,23 +79,14 @@ function calculateLine(item) {
   };
 }
 
-function getNextInvoiceNumber() {
-  const invoices = readArray(INVOICES_KEY);
-
-  if (!invoices.length) return 1;
-
-  const maxNo = Math.max(
-    ...invoices.map((item) => Number(item.invoiceNumber || 0))
-  );
-
-  return maxNo + 1;
+function getPaymentType(method) {
+  return method === "آجل" ? "credit" : "cash";
 }
 
 export default function POSPage() {
-  const [productStorageKey, setProductStorageKey] = useState(
-    PRODUCT_STORAGE_KEYS[0]
-  );
   const [products, setProducts] = useState([]);
+  const [salesInvoices, setSalesInvoices] = useState([]);
+
   const [searchTerm, setSearchTerm] = useState("");
   const [selectedProductId, setSelectedProductId] = useState("");
   const [quantityToAdd, setQuantityToAdd] = useState(1);
@@ -191,6 +104,9 @@ export default function POSPage() {
   const [cartItems, setCartItems] = useState([]);
   const [expandedLineId, setExpandedLineId] = useState(null);
 
+  const [isLoading, setIsLoading] = useState(true);
+  const [isSaving, setIsSaving] = useState(false);
+
   const [toast, setToast] = useState(null);
   const [confirmState, setConfirmState] = useState({
     open: false,
@@ -200,11 +116,82 @@ export default function POSPage() {
   });
 
   useEffect(() => {
-    const storage = getProductStorage();
-    setProductStorageKey(storage.key);
-    setProducts(storage.items.map(normalizeProduct));
-    setInvoiceNumber(getNextInvoiceNumber());
+    loadPageData();
   }, []);
+
+  async function loadPageData() {
+    setIsLoading(true);
+
+    await Promise.all([loadProducts(), loadSalesInvoices()]);
+
+    setIsLoading(false);
+  }
+
+  async function loadProducts() {
+    try {
+      const token = getAuthToken();
+
+      const response = await fetch(`${API_BASE_URL}/products`, {
+        headers: {
+          Accept: "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        showToast(data.message || "تعذر تحميل المنتجات من السيرفر.", "error");
+        return;
+      }
+
+      const normalizedProducts = Array.isArray(data.products)
+        ? data.products.map(normalizeProduct)
+        : [];
+
+      setProducts(normalizedProducts);
+    } catch {
+      showToast(
+        "تعذر الاتصال بالسيرفر أثناء تحميل المنتجات. تأكد أن Laravel يعمل.",
+        "error"
+      );
+    }
+  }
+
+  async function loadSalesInvoices() {
+    try {
+      const token = getAuthToken();
+
+      const response = await fetch(`${API_BASE_URL}/sales-invoices`, {
+        headers: {
+          Accept: "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        showToast(data.message || "تعذر تحميل فواتير البيع.", "error");
+        return;
+      }
+
+      const normalizedInvoices = Array.isArray(data.sales_invoices)
+        ? data.sales_invoices.map(normalizeSalesInvoice)
+        : [];
+
+      setSalesInvoices(normalizedInvoices);
+
+      const nextNumber =
+        normalizedInvoices.length > 0
+          ? Math.max(...normalizedInvoices.map((item) => Number(item.id || 0))) + 1
+          : 1;
+
+      setInvoiceNumber(nextNumber);
+    } catch {
+      showToast("تعذر الاتصال بالسيرفر أثناء تحميل فواتير البيع.", "error");
+    }
+  }
 
   const filteredProducts = useMemo(() => {
     const term = searchTerm.trim().toLowerCase();
@@ -450,102 +437,73 @@ export default function POSPage() {
     return true;
   }
 
-  function handleSaveInvoice() {
+  async function handleSaveInvoice() {
     if (!validateInvoice()) return;
 
-    const updatedProducts = products.map((product) => {
-      const line = cartItems.find(
-        (item) => String(item.productId) === String(product.id)
-      );
+    setIsSaving(true);
 
-      const newStock = line
-        ? Number(product.stock) - Number(line.qty)
-        : Number(product.stock);
+    try {
+      const token = getAuthToken();
 
-      return {
-        ...product,
-
-        // صيغة نقطة البيع
-        stock: newStock,
-        salePrice: Number(product.salePrice),
-        costPrice: Number(product.costPrice),
-
-        // صيغة صفحة المخزون
-        quantity: newStock,
-        sellingPrice: Number(product.salePrice),
-        purchasePrice: Number(product.costPrice),
+      const payload = {
+        customer_name: customerName.trim(),
+        payment_type: getPaymentType(paymentMethod),
+        invoice_date: invoiceDate,
+        items: cartItems.map((item) => ({
+          product_id: item.productId,
+          quantity: Number(item.qty),
+          sale_price: Number(item.unitPrice),
+          discount_percent: Number(item.discountPercent || 0),
+          discount_value: Number(item.discountValue || 0),
+        })),
       };
-    });
 
-    const invoiceLines = cartItems.map((item, index) => {
-      const calc = calculateLine(item);
+      const response = await fetch(`${API_BASE_URL}/sales-invoices`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify(payload),
+      });
 
-      return {
-        rowNo: index + 1,
-        productId: item.productId,
-        code: item.code,
-        name: item.name,
-        unit: item.unit,
-        qty: item.qty,
-        unitPrice: item.unitPrice,
-        costPrice: item.costPrice,
-        discountPercent: item.discountPercent,
-        discountValue: item.discountValue,
-        gross: calc.gross,
-        net: calc.net,
-        totalCost: calc.totalCost,
-        totalProfit: calc.totalProfit,
-      };
-    });
+      const data = await response.json();
 
-    const invoice = {
-      id: `inv-${Date.now()}`,
-      invoiceNumber,
-      date: invoiceDate,
-      customerName: customerName.trim(),
-      currency,
-      exchangeRate,
-      paymentMethod,
-      description,
-      totals,
-      lines: invoiceLines,
-      createdAt: new Date().toISOString(),
-    };
+      if (!response.ok) {
+        const firstError =
+          data?.errors?.customer_name?.[0] ||
+          data?.errors?.payment_type?.[0] ||
+          data?.errors?.invoice_date?.[0] ||
+          data?.errors?.items?.[0] ||
+          data?.message;
 
-    const storedInvoices = readArray(INVOICES_KEY);
-    writeArray(INVOICES_KEY, [invoice, ...storedInvoices]);
+        showToast(firstError || "تعذر حفظ فاتورة البيع.", "error");
+        setIsSaving(false);
+        return;
+      }
 
-    writeArray(productStorageKey, updatedProducts);
+      const savedInvoice = normalizeSalesInvoice(data.sales_invoice);
 
-    const storedEntries = readArray(JOURNAL_KEY);
+      setSalesInvoices((prevInvoices) => [savedInvoice, ...prevInvoices]);
 
-    const newEntry = {
-      id: `entry-${Date.now()}`,
-      date: invoiceDate,
-      description: `فاتورة بيع رقم ${invoiceNumber}`,
-      debitAccount: paymentMethod === "آجل" ? "العملاء" : "الصندوق",
-      creditAccount: "المبيعات",
-      amount: totals.net,
-      source: "POS",
-      invoiceNumber,
-    };
+      setCartItems([]);
+      setExpandedLineId(null);
+      setInvoiceDate(new Date().toISOString().slice(0, 10));
+      setCustomerName("عميل نقدي");
+      setCurrency("ريال");
+      setExchangeRate(1);
+      setPaymentMethod("نقداً");
+      setDescription("فاتورة بيع");
 
-    writeArray(JOURNAL_KEY, [newEntry, ...storedEntries]);
+      await Promise.all([loadProducts(), loadSalesInvoices()]);
 
-    setProducts(updatedProducts);
-    setCartItems([]);
-    setExpandedLineId(null);
-    setInvoiceNumber(getNextInvoiceNumber());
-    setInvoiceDate(new Date().toISOString().slice(0, 10));
-    setCustomerName("عميل نقدي");
-    setCurrency("ريال");
-    setExchangeRate(1);
-    setPaymentMethod("نقداً");
-    setDescription("فاتورة بيع");
+      showToast(data.message || "تم حفظ فاتورة البيع وتحديث المخزون بنجاح.");
+    } catch {
+      showToast("تعذر الاتصال بالسيرفر أثناء حفظ فاتورة البيع.", "error");
+    }
 
-    showToast(
-      `تم حفظ فاتورة البيع رقم ${invoiceNumber} وتحديث المخزون وتوليد القيد بنجاح.`
-    );
+    setIsSaving(false);
   }
 
   return (
@@ -554,8 +512,8 @@ export default function POSPage() {
         <div>
           <h1>نقطة البيع POS</h1>
           <p>
-            فاتورة موحدة داخل جدول واحد، مع إمكانية إضافة عدة أصناف وإظهار
-            التكلفة والربح داخل الصف عند الضغط على السعر.
+            فاتورة بيع مرتبطة الآن بقاعدة البيانات، تحفظ الفاتورة وتنقص المخزون
+            من Laravel تلقائيًا.
           </p>
         </div>
 
@@ -583,6 +541,11 @@ export default function POSPage() {
             <Receipt size={20} />
             <h2>فاتورة بيع</h2>
           </div>
+
+          <button type="button" className="secondary-btn" onClick={loadPageData}>
+            <RefreshCcw size={18} />
+            تحديث من السيرفر
+          </button>
         </div>
 
         <div className="pos-v3-top-grid">
@@ -664,7 +627,10 @@ export default function POSPage() {
               value={selectedProductId}
               onChange={(e) => setSelectedProductId(e.target.value)}
             >
-              <option value="">اختر المنتج</option>
+              <option value="">
+                {isLoading ? "جاري تحميل المنتجات..." : "اختر المنتج"}
+              </option>
+
               {filteredProducts.map((product) => (
                 <option key={product.id} value={product.id}>
                   {product.code} | {product.name} | السعر:{" "}
@@ -895,9 +861,10 @@ export default function POSPage() {
             type="button"
             className="primary-btn"
             onClick={handleSaveInvoice}
+            disabled={isSaving}
           >
             <Save size={18} />
-            حفظ الفاتورة
+            {isSaving ? "جاري الحفظ..." : "حفظ الفاتورة"}
           </button>
         </div>
       </div>

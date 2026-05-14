@@ -1,10 +1,8 @@
 import { Navigate } from "react-router-dom";
-import { getCurrentUser } from "../utils/auth";
+import { isLoggedIn } from "../utils/auth";
 
 function ProtectedRoute({ children }) {
-  const currentUser = getCurrentUser();
-
-  if (!currentUser) {
+  if (!isLoggedIn()) {
     return <Navigate to="/login" replace />;
   }
 

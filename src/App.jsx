@@ -9,6 +9,9 @@ import PracticePage from "./pages/PracticePage";
 import ScenariosPage from "./pages/ScenariosPage";
 import PlacementTestPage from "./pages/PlacementTestPage";
 
+import AdminDashboardPage from "./pages/AdminDashboardPage";
+import AdminUsersPage from "./pages/AdminUsersPage";
+
 import AccountsPage from "./pages/AccountsPage";
 import InventoryPage from "./pages/InventoryPage";
 import POSPage from "./pages/POSPage";
@@ -41,7 +44,26 @@ function App() {
         <Route path="scenarios" element={<ScenariosPage />} />
         <Route path="placement-test" element={<PlacementTestPage />} />
 
-        {/* صفحات الأدمن فقط */}
+        {/* لوحة تحكم الأدمن */}
+        <Route
+          path="admin-dashboard"
+          element={
+            <AdminRoute>
+              <AdminDashboardPage />
+            </AdminRoute>
+          }
+        />
+
+        <Route
+          path="admin-users"
+          element={
+            <AdminRoute>
+              <AdminUsersPage />
+            </AdminRoute>
+          }
+        />
+
+        {/* صفحات النظام التجاري والمحاسبي - أدمن فقط */}
         <Route
           path="accounts"
           element={

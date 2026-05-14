@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   Users,
   Search,
@@ -7,50 +7,20 @@ import {
   Wallet,
   Eye,
   ReceiptText,
+  RefreshCcw,
 } from "lucide-react";
 
-const SALES_KEYS = ["mohasbti_sales_invoices", "salesInvoices"];
-const PURCHASES_KEY = "purchaseInvoices";
-const VOUCHERS_KEY = "vouchers";
+import AppToast from "../components/AppToast";
+import { getAuthToken } from "../utils/auth";
 
-function readArray(key) {
-  try {
-    const raw = localStorage.getItem(key);
-    const data = JSON.parse(raw);
-    return Array.isArray(data) ? data : [];
-  } catch {
-    return [];
-  }
-}
+const API_BASE_URL = "http://127.0.0.1:8000/api";
 
 function formatCurrency(value) {
   return `${Number(value || 0).toLocaleString()} ريال`;
 }
 
-function getPaymentType(invoice) {
-  return invoice.paymentMethod ?? invoice.paymentType ?? "";
-}
-
-function getInvoiceCustomer(invoice) {
-  return invoice.customerName ?? "عميل نقدي";
-}
-
-function getInvoiceNumber(invoice, index) {
-  return invoice.invoiceNumber ?? invoice.number ?? index + 1;
-}
-
-function getSalesInvoiceTotal(invoice) {
-  return (
-    invoice.totals?.net ??
-    invoice.total ??
-    invoice.netTotal ??
-    invoice.grossTotal ??
-    0
-  );
-}
-
-function getPurchaseInvoiceTotal(invoice) {
-  return invoice.total ?? 0;
+function formatDate(value) {
+  return String(value || "").slice(0, 10);
 }
 
 function getPartyTypeLabel(type) {
@@ -71,15 +41,140 @@ function getBalanceLabel(party) {
   return "متوازن";
 }
 
+function normalizeSalesInvoice(invoice) {
+  return {
+    id: invoice.id,
+    number: invoice.id,
+    date: formatDate(invoice.invoice_date || invoice.created_at),
+    customerName: invoice.customer_name || "عميل نقدي",
+    paymentType: invoice.payment_type || "cash",
+    total: Number(invoice.net_total || 0),
+  };
+}
+
+function normalizePurchaseInvoice(invoice) {
+  return {
+    id: invoice.id,
+    number: invoice.id,
+    date: formatDate(invoice.invoice_date || invoice.created_at),
+    supplierName: invoice.supplier_name || "مورد غير محدد",
+    paymentType: invoice.payment_type || "cash",
+    total: Number(invoice.total || 0),
+  };
+}
+
+function normalizeVoucher(voucher) {
+  return {
+    id: voucher.id,
+    number: voucher.id,
+    type: voucher.type,
+    date: formatDate(voucher.voucher_date || voucher.created_at),
+    partyName: voucher.party_name || "غير محدد",
+    accountName: voucher.account_name || "",
+    paymentMethod: voucher.payment_method || "الصندوق",
+    amount: Number(voucher.amount || 0),
+    description: voucher.description || "",
+  };
+}
+
 function PartiesPage() {
   const [searchTerm, setSearchTerm] = useState("");
   const [selectedPartyName, setSelectedPartyName] = useState(null);
 
-  const parties = useMemo(() => {
-    const salesInvoices = SALES_KEYS.flatMap((key) => readArray(key));
-    const purchaseInvoices = readArray(PURCHASES_KEY);
-    const vouchers = readArray(VOUCHERS_KEY);
+  const [salesInvoices, setSalesInvoices] = useState([]);
+  const [purchaseInvoices, setPurchaseInvoices] = useState([]);
+  const [vouchers, setVouchers] = useState([]);
 
+  const [isLoading, setIsLoading] = useState(true);
+  const [toast, setToast] = useState(null);
+
+  useEffect(() => {
+    loadPartiesData();
+  }, []);
+
+  function showToast(message, type = "success") {
+    setToast({ message, type });
+
+    setTimeout(() => {
+      setToast(null);
+    }, 3500);
+  }
+
+  async function loadPartiesData() {
+    setIsLoading(true);
+
+    try {
+      const token = getAuthToken();
+
+      const [salesResponse, purchasesResponse, vouchersResponse] =
+        await Promise.all([
+          fetch(`${API_BASE_URL}/sales-invoices`, {
+            headers: {
+              Accept: "application/json",
+              Authorization: `Bearer ${token}`,
+            },
+          }),
+          fetch(`${API_BASE_URL}/purchase-invoices`, {
+            headers: {
+              Accept: "application/json",
+              Authorization: `Bearer ${token}`,
+            },
+          }),
+          fetch(`${API_BASE_URL}/vouchers`, {
+            headers: {
+              Accept: "application/json",
+              Authorization: `Bearer ${token}`,
+            },
+          }),
+        ]);
+
+      const salesData = await salesResponse.json();
+      const purchasesData = await purchasesResponse.json();
+      const vouchersData = await vouchersResponse.json();
+
+      if (!salesResponse.ok) {
+        showToast(salesData.message || "تعذر تحميل فواتير المبيعات.", "error");
+      }
+
+      if (!purchasesResponse.ok) {
+        showToast(
+          purchasesData.message || "تعذر تحميل فواتير المشتريات.",
+          "error"
+        );
+      }
+
+      if (!vouchersResponse.ok) {
+        showToast(vouchersData.message || "تعذر تحميل السندات.", "error");
+      }
+
+      setSalesInvoices(
+        Array.isArray(salesData.sales_invoices)
+          ? salesData.sales_invoices.map(normalizeSalesInvoice)
+          : []
+      );
+
+      setPurchaseInvoices(
+        Array.isArray(purchasesData.purchase_invoices)
+          ? purchasesData.purchase_invoices.map(normalizePurchaseInvoice)
+          : []
+      );
+
+      setVouchers(
+        Array.isArray(vouchersData.vouchers)
+          ? vouchersData.vouchers.map(normalizeVoucher)
+          : []
+      );
+    } catch {
+      showToast(
+        "تعذر الاتصال بالسيرفر. تأكد أن Laravel يعمل على http://127.0.0.1:8000",
+        "error"
+      );
+    }
+
+    setIsLoading(false);
+  }
+
+  const parties = useMemo(() => {
     const partiesMap = {};
 
     function addParty(name, type) {
@@ -100,88 +195,78 @@ function PartiesPage() {
       }
     }
 
-    // فواتير البيع الآجل: العميل مدين
-    salesInvoices.forEach((invoice, index) => {
-      const paymentType = getPaymentType(invoice);
-      const customerName = getInvoiceCustomer(invoice);
-      const total = Number(getSalesInvoiceTotal(invoice));
-      const invoiceNumber = getInvoiceNumber(invoice, index);
-
-      const isCreditSale =
-        paymentType === "credit" ||
-        paymentType === "آجل" ||
-        paymentType === "آجل / على الحساب";
+    // فواتير البيع الآجلة: العميل مدين
+    salesInvoices.forEach((invoice) => {
+      const isCreditSale = invoice.paymentType === "credit";
 
       if (!isCreditSale) return;
+
+      const customerName = invoice.customerName || "عميل غير محدد";
+      const total = Number(invoice.total || 0);
 
       addParty(customerName, "customer");
 
       partiesMap[customerName].debit += total;
       partiesMap[customerName].movements.push({
-        id: invoice.id ?? `sale-${invoiceNumber}`,
+        id: `sale-${invoice.id}`,
         date: invoice.date,
         type: "فاتورة بيع آجل",
-        description: `فاتورة بيع رقم ${invoiceNumber}`,
+        description: `فاتورة بيع رقم ${invoice.number}`,
         debit: total,
         credit: 0,
       });
     });
 
-    // فواتير الشراء الآجل: المورد دائن
-    purchaseInvoices.forEach((invoice, index) => {
-      const paymentType = invoice.paymentType ?? "";
-      const supplierName = invoice.supplierName ?? "مورد غير محدد";
-      const total = Number(getPurchaseInvoiceTotal(invoice));
-      const invoiceNumber = invoice.number ?? index + 1;
-
-      const isCreditPurchase = paymentType === "credit" || paymentType === "آجل";
+    // فواتير الشراء الآجلة: المورد دائن
+    purchaseInvoices.forEach((invoice) => {
+      const isCreditPurchase = invoice.paymentType === "credit";
 
       if (!isCreditPurchase) return;
+
+      const supplierName = invoice.supplierName || "مورد غير محدد";
+      const total = Number(invoice.total || 0);
 
       addParty(supplierName, "supplier");
 
       partiesMap[supplierName].credit += total;
       partiesMap[supplierName].movements.push({
-        id: invoice.id ?? `purchase-${invoiceNumber}`,
+        id: `purchase-${invoice.id}`,
         date: invoice.date,
         type: "فاتورة شراء آجل",
-        description: `فاتورة شراء رقم ${invoiceNumber}`,
+        description: `فاتورة شراء رقم ${invoice.number}`,
         debit: 0,
         credit: total,
       });
     });
 
-    // السندات
+    // السندات: سند القبض يخفض رصيد العميل، وسند الصرف يخفض رصيد المورد
     vouchers.forEach((voucher) => {
       const amount = Number(voucher.amount || 0);
       const partyName = voucher.partyName || "غير محدد";
-      const accountName = voucher.accountName || "";
 
       if (voucher.type === "receipt") {
         addParty(partyName, "customer");
 
         partiesMap[partyName].credit += amount;
         partiesMap[partyName].movements.push({
-          id: voucher.id,
+          id: `voucher-receipt-${voucher.id}`,
           date: voucher.date,
           type: "سند قبض",
-          description: voucher.description || "تحصيل من عميل",
+          description: voucher.description || `سند قبض رقم ${voucher.number}`,
           debit: 0,
           credit: amount,
         });
       }
 
       if (voucher.type === "payment") {
-        const partyType = accountName.includes("مورد") ? "supplier" : "other";
-
-        addParty(partyName, partyType);
+        addParty(partyName, "supplier");
 
         partiesMap[partyName].debit += amount;
         partiesMap[partyName].movements.push({
-          id: voucher.id,
+          id: `voucher-payment-${voucher.id}`,
           date: voucher.date,
           type: "سند صرف",
-          description: voucher.description || "صرف نقدي",
+          description: voucher.description || `سند صرف رقم ${voucher.number}`,
           debit: amount,
           credit: 0,
         });
@@ -196,7 +281,7 @@ function PartiesPage() {
         }),
       }))
       .sort((a, b) => a.name.localeCompare(b.name, "ar"));
-  }, []);
+  }, [salesInvoices, purchaseInvoices, vouchers]);
 
   const filteredParties = parties.filter((party) => {
     const keyword = searchTerm.trim().toLowerCase();
@@ -231,8 +316,8 @@ function PartiesPage() {
           <div>
             <h1 className="section-title">العملاء والموردون</h1>
             <p className="section-subtitle">
-              تابع أرصدة العملاء والموردين بناءً على فواتير البيع الآجل،
-              فواتير الشراء الآجل، والسندات المسجلة.
+              تابع أرصدة العملاء والموردين بناءً على فواتير البيع الآجلة،
+              فواتير الشراء الآجلة، وسندات القبض والصرف من قاعدة بيانات Laravel.
             </p>
           </div>
 
@@ -247,6 +332,18 @@ function PartiesPage() {
               <strong>{formatCurrency(totalCustomersBalance)}</strong>
             </div>
           </div>
+        </div>
+
+        <div className="business-report-actions">
+          <button
+            type="button"
+            className="secondary-btn"
+            onClick={loadPartiesData}
+            disabled={isLoading}
+          >
+            <RefreshCcw size={18} />
+            {isLoading ? "جاري التحديث..." : "تحديث الجهات من السيرفر"}
+          </button>
         </div>
 
         <div className="parties-summary">
@@ -294,7 +391,9 @@ function PartiesPage() {
               </div>
             </div>
 
-            {filteredParties.length === 0 ? (
+            {isLoading ? (
+              <div className="empty-search">جاري تحميل الجهات من السيرفر...</div>
+            ) : filteredParties.length === 0 ? (
               <div className="empty-search">
                 لا توجد جهات مطابقة للبحث الحالي.
               </div>
@@ -323,9 +422,7 @@ function PartiesPage() {
                         <tr
                           key={party.name}
                           className={
-                            selectedPartyName === party.name
-                              ? "editing-row"
-                              : ""
+                            selectedPartyName === party.name ? "editing-row" : ""
                           }
                         >
                           <td>
@@ -477,6 +574,8 @@ function PartiesPage() {
           </div>
         </div>
       </div>
+
+      <AppToast toast={toast} onClose={() => setToast(null)} />
     </div>
   );
 }

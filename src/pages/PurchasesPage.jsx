@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   ShoppingBag,
   Plus,
@@ -7,40 +7,72 @@ import {
   Search,
   PackagePlus,
   AlertCircle,
+  RefreshCcw,
 } from "lucide-react";
 
 import AppToast from "../components/AppToast";
 import AppConfirm from "../components/AppConfirm";
+import { getAuthToken } from "../utils/auth";
 
-const PRODUCTS_KEY = "products";
-const PURCHASES_KEY = "purchaseInvoices";
-const JOURNAL_KEY = "journalEntries";
-
-function readArray(key) {
-  try {
-    const raw = localStorage.getItem(key);
-    const data = JSON.parse(raw);
-    return Array.isArray(data) ? data : [];
-  } catch {
-    return [];
-  }
-}
-
-function saveArray(key, value) {
-  localStorage.setItem(key, JSON.stringify(value));
-}
+const API_BASE_URL = "http://127.0.0.1:8000/api";
 
 function formatCurrency(value) {
   return `${Number(value || 0).toLocaleString()} ريال`;
 }
 
+function normalizeProduct(product) {
+  const purchasePrice = Number(product.cost_price ?? product.purchasePrice ?? 0);
+  const sellingPrice = Number(product.sale_price ?? product.sellingPrice ?? 0);
+  const quantity = Number(product.quantity ?? product.stock ?? 0);
+
+  return {
+    ...product,
+    purchasePrice,
+    sellingPrice,
+    quantity,
+    costPrice: purchasePrice,
+    salePrice: sellingPrice,
+    stock: quantity,
+  };
+}
+
+function normalizePurchaseInvoice(invoice) {
+  const items = Array.isArray(invoice.items)
+    ? invoice.items.map((item) => ({
+        id: item.id,
+        productId: item.product_id,
+        productName: item.product?.name || "منتج غير معروف",
+        category: item.product?.category || "-",
+        quantity: Number(item.quantity || 0),
+        unitCost: Number(item.cost_price || 0),
+        total: Number(item.total || 0),
+      }))
+    : [];
+
+  return {
+    id: invoice.id,
+    number: invoice.id,
+    date: invoice.invoice_date || invoice.created_at?.slice(0, 10),
+    supplierName: invoice.supplier_name,
+    paymentType: invoice.payment_type,
+    items,
+    total: Number(invoice.total || 0),
+    createdAt: invoice.created_at,
+  };
+}
+
 function PurchasesPage() {
-  const [products, setProducts] = useState(() => readArray(PRODUCTS_KEY));
+  const [products, setProducts] = useState([]);
+  const [purchaseInvoices, setPurchaseInvoices] = useState([]);
   const [purchaseItems, setPurchaseItems] = useState([]);
+
   const [searchTerm, setSearchTerm] = useState("");
   const [selectedProductId, setSelectedProductId] = useState("");
   const [quantity, setQuantity] = useState(1);
   const [unitCost, setUnitCost] = useState("");
+
+  const [isLoading, setIsLoading] = useState(true);
+  const [isSaving, setIsSaving] = useState(false);
 
   const [toast, setToast] = useState(null);
 
@@ -58,7 +90,73 @@ function PurchasesPage() {
     description: "فاتورة شراء بضاعة",
   });
 
-  const purchaseInvoices = readArray(PURCHASES_KEY);
+  useEffect(() => {
+    loadPageData();
+  }, []);
+
+  async function loadPageData() {
+    setIsLoading(true);
+
+    await Promise.all([loadProducts(), loadPurchaseInvoices()]);
+
+    setIsLoading(false);
+  }
+
+  async function loadProducts() {
+    try {
+      const token = getAuthToken();
+
+      const response = await fetch(`${API_BASE_URL}/products`, {
+        headers: {
+          Accept: "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        showToast(data.message || "تعذر تحميل المنتجات.", "error");
+        return;
+      }
+
+      const normalizedProducts = Array.isArray(data.products)
+        ? data.products.map(normalizeProduct)
+        : [];
+
+      setProducts(normalizedProducts);
+    } catch {
+      showToast("تعذر الاتصال بالسيرفر أثناء تحميل المنتجات.", "error");
+    }
+  }
+
+  async function loadPurchaseInvoices() {
+    try {
+      const token = getAuthToken();
+
+      const response = await fetch(`${API_BASE_URL}/purchase-invoices`, {
+        headers: {
+          Accept: "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        showToast(data.message || "تعذر تحميل فواتير الشراء.", "error");
+        return;
+      }
+
+      const normalizedInvoices = Array.isArray(data.purchase_invoices)
+        ? data.purchase_invoices.map(normalizePurchaseInvoice)
+        : [];
+
+      setPurchaseInvoices(normalizedInvoices);
+    } catch {
+      showToast("تعذر الاتصال بالسيرفر أثناء تحميل فواتير الشراء.", "error");
+    }
+  }
 
   const filteredProducts = products.filter((product) => {
     const keyword = searchTerm.trim().toLowerCase();
@@ -67,7 +165,8 @@ function PurchasesPage() {
 
     return (
       product.name.toLowerCase().includes(keyword) ||
-      product.category.toLowerCase().includes(keyword) ||
+      String(product.category ?? "").toLowerCase().includes(keyword) ||
+      String(product.code ?? "").toLowerCase().includes(keyword) ||
       String(product.id).includes(keyword)
     );
   });
@@ -247,98 +346,73 @@ function PurchasesPage() {
     return true;
   }
 
-  function savePurchaseInvoice() {
+  async function savePurchaseInvoice() {
     if (!validatePurchaseInvoice()) return;
 
-    const currentInvoices = readArray(PURCHASES_KEY);
-    const currentEntries = readArray(JOURNAL_KEY);
+    setIsSaving(true);
 
-    const invoiceNumber = currentInvoices.length + 1;
-    const invoiceId = Date.now();
+    try {
+      const token = getAuthToken();
 
-    const updatedProducts = products.map((product) => {
-      const purchaseItem = purchaseItems.find(
-        (item) => item.productId === product.id
-      );
-
-      if (!purchaseItem) return product;
-
-      const oldQuantity = Number(product.quantity ?? product.stock ?? 0);
-      const oldCost = Number(product.purchasePrice ?? product.costPrice ?? 0);
-      const addedQuantity = Number(purchaseItem.quantity);
-      const newCost = Number(purchaseItem.unitCost);
-
-      const totalOldCost = oldQuantity * oldCost;
-      const totalNewCost = addedQuantity * newCost;
-      const newQuantity = oldQuantity + addedQuantity;
-
-      const averageCost =
-        newQuantity > 0
-          ? Math.round((totalOldCost + totalNewCost) / newQuantity)
-          : newCost;
-
-      return {
-        ...product,
-
-        // صيغة صفحة المخزون
-        quantity: newQuantity,
-        purchasePrice: averageCost,
-        sellingPrice: Number(product.sellingPrice ?? product.salePrice ?? 0),
-
-        // صيغة نقطة البيع
-        stock: newQuantity,
-        costPrice: averageCost,
-        salePrice: Number(product.sellingPrice ?? product.salePrice ?? 0),
+      const payload = {
+        supplier_name: invoiceInfo.supplierName.trim(),
+        payment_type: invoiceInfo.paymentType,
+        invoice_date: invoiceInfo.date,
+        items: purchaseItems.map((item) => ({
+          product_id: item.productId,
+          quantity: Number(item.quantity),
+          cost_price: Number(item.unitCost),
+        })),
       };
-    });
 
-    const newInvoice = {
-      id: invoiceId,
-      number: invoiceNumber,
-      date: invoiceInfo.date,
-      supplierName: invoiceInfo.supplierName.trim(),
-      paymentType: invoiceInfo.paymentType,
-      description: invoiceInfo.description || "فاتورة شراء بضاعة",
-      items: purchaseItems,
-      total: totalPurchase,
-      createdAt: new Date().toISOString(),
-    };
+      const response = await fetch(`${API_BASE_URL}/purchase-invoices`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify(payload),
+      });
 
-    const journalEntry = {
-      id: invoiceId + 1,
-      number: currentEntries.length + 1,
-      date: invoiceInfo.date,
-      debitAccount: "المخزون",
-      creditAccount:
-        invoiceInfo.paymentType === "cash" ? "الصندوق" : "الموردون",
-      description:
-        invoiceInfo.paymentType === "cash"
-          ? `فاتورة شراء نقدي رقم ${invoiceNumber} - ${invoiceInfo.supplierName}`
-          : `فاتورة شراء آجل رقم ${invoiceNumber} - ${invoiceInfo.supplierName}`,
-      amount: totalPurchase,
-      source: "purchase",
-      invoiceNumber,
-    };
+      const data = await response.json();
 
-    saveArray(PRODUCTS_KEY, updatedProducts);
-    saveArray(PURCHASES_KEY, [newInvoice, ...currentInvoices]);
-    saveArray(JOURNAL_KEY, [journalEntry, ...currentEntries]);
+      if (!response.ok) {
+        const firstError =
+          data?.errors?.supplier_name?.[0] ||
+          data?.errors?.payment_type?.[0] ||
+          data?.errors?.invoice_date?.[0] ||
+          data?.errors?.items?.[0] ||
+          data?.message;
 
-    setProducts(updatedProducts);
-    setPurchaseItems([]);
-    setInvoiceInfo({
-      supplierName: "",
-      date: new Date().toISOString().slice(0, 10),
-      paymentType: "cash",
-      description: "فاتورة شراء بضاعة",
-    });
-    setSelectedProductId("");
-    setQuantity(1);
-    setUnitCost("");
+        showToast(firstError || "تعذر حفظ فاتورة الشراء.", "error");
+        setIsSaving(false);
+        return;
+      }
 
-    showToast(
-      `تم حفظ فاتورة الشراء رقم ${invoiceNumber} وتحديث المخزون وتوليد القيد بنجاح.`
-    );
+      const newInvoice = normalizePurchaseInvoice(data.purchase_invoice);
+
+      setPurchaseInvoices((prevInvoices) => [newInvoice, ...prevInvoices]);
+
+      setPurchaseItems([]);
+      setInvoiceInfo({
+        supplierName: "",
+        date: new Date().toISOString().slice(0, 10),
+        paymentType: "cash",
+        description: "فاتورة شراء بضاعة",
+      });
+      setSelectedProductId("");
+      setQuantity(1);
+      setUnitCost("");
+
+      await loadProducts();
+
+      showToast(data.message || "تم حفظ فاتورة الشراء وتحديث المخزون بنجاح.");
+    } catch {
+      showToast("تعذر الاتصال بالسيرفر أثناء حفظ فاتورة الشراء.", "error");
+    }
+
+    setIsSaving(false);
   }
 
   const totalPurchasedItems = purchaseInvoices.reduce((sum, invoice) => {
@@ -356,8 +430,8 @@ function PurchasesPage() {
           <div>
             <h1 className="section-title">المشتريات</h1>
             <p className="section-subtitle">
-              سجّل فواتير شراء البضاعة من الموردين، وسيتم تحديث المخزون وتوليد
-              القيد المحاسبي تلقائيًا.
+              سجّل فواتير شراء البضاعة من الموردين، وسيتم تحديث المخزون في قاعدة
+              بيانات Laravel تلقائيًا.
             </p>
           </div>
 
@@ -374,12 +448,12 @@ function PurchasesPage() {
           </div>
         </div>
 
-        {products.length === 0 && (
+        {products.length === 0 && !isLoading && (
           <div className="balance-status error">
             <AlertCircle size={22} />
             <span>
-              لا توجد منتجات في المخزون. افتح صفحة المخزون واضغط توليد 500 منتج
-              وهمي أولًا.
+              لا توجد منتجات في قاعدة البيانات. افتح صفحة المخزون أو شغّل
+              ProductSeeder من Laravel لإضافة منتجات تجريبية.
             </span>
           </div>
         )}
@@ -410,6 +484,11 @@ function PurchasesPage() {
               <ShoppingBag size={22} />
               <h2>فاتورة شراء جديدة</h2>
             </div>
+
+            <button type="button" className="secondary-btn" onClick={loadPageData}>
+              <RefreshCcw size={18} />
+              تحديث البيانات من السيرفر
+            </button>
 
             <div className="purchase-info-grid">
               <label>
@@ -472,8 +551,7 @@ function PurchasesPage() {
               <option value="">اختر المنتج</option>
               {filteredProducts.map((product) => (
                 <option key={product.id} value={product.id}>
-                  {product.name} - المتاح:{" "}
-                  {product.quantity ?? product.stock ?? 0}
+                  {product.name} - المتاح: {product.quantity}
                 </option>
               ))}
             </select>
@@ -597,9 +675,10 @@ function PurchasesPage() {
                 type="button"
                 className="primary-btn"
                 onClick={savePurchaseInvoice}
+                disabled={isSaving}
               >
                 <Save size={18} />
-                حفظ فاتورة الشراء
+                {isSaving ? "جاري الحفظ..." : "حفظ فاتورة الشراء"}
               </button>
             </div>
           </div>

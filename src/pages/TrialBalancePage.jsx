@@ -1,23 +1,29 @@
-import { useMemo } from "react";
-import { CheckCircle2, AlertCircle, BarChart3, Printer } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import {
+  CheckCircle2,
+  AlertCircle,
+  BarChart3,
+  Printer,
+  RefreshCcw,
+} from "lucide-react";
+
+import AppToast from "../components/AppToast";
+import { getAuthToken } from "../utils/auth";
+
+const API_BASE_URL = "http://127.0.0.1:8000/api";
 
 const defaultAccounts = [
   { id: 1, name: "الصندوق", type: "asset", isDefault: true },
   { id: 2, name: "البنك", type: "asset", isDefault: true },
   { id: 3, name: "العملاء", type: "asset", isDefault: true },
   { id: 4, name: "المخزون", type: "asset", isDefault: true },
-  { id: 5, name: "الأثاث", type: "asset", isDefault: true },
-  { id: 6, name: "معدات", type: "asset", isDefault: true },
-
-  { id: 7, name: "الموردون", type: "liability", isDefault: true },
-
-  { id: 8, name: "رأس المال", type: "equity", isDefault: true },
-
-  { id: 9, name: "المبيعات", type: "revenue", isDefault: true },
-
-  { id: 10, name: "المشتريات", type: "expense", isDefault: true },
-  { id: 11, name: "مصروف الإيجار", type: "expense", isDefault: true },
-  { id: 12, name: "مصروف الرواتب", type: "expense", isDefault: true },
+  { id: 5, name: "تكلفة البضاعة المباعة", type: "expense", isDefault: true },
+  { id: 6, name: "الموردون", type: "liability", isDefault: true },
+  { id: 7, name: "رأس المال", type: "equity", isDefault: true },
+  { id: 8, name: "المبيعات", type: "revenue", isDefault: true },
+  { id: 9, name: "المشتريات", type: "expense", isDefault: true },
+  { id: 10, name: "مصروف الإيجار", type: "expense", isDefault: true },
+  { id: 11, name: "مصروف الرواتب", type: "expense", isDefault: true },
 ];
 
 const accountTypeNames = {
@@ -29,23 +35,253 @@ const accountTypeNames = {
   unknown: "غير مصنف",
 };
 
+function formatCurrency(value) {
+  return `${Number(value || 0).toLocaleString()} ريال`;
+}
+
+function formatDate(value) {
+  return String(value || "").slice(0, 10);
+}
+
+function normalizeSalesInvoice(invoice) {
+  const items = Array.isArray(invoice.items) ? invoice.items : [];
+
+  return {
+    id: invoice.id,
+    number: invoice.id,
+    date: formatDate(invoice.invoice_date || invoice.created_at),
+    customerName: invoice.customer_name || "عميل نقدي",
+    paymentType: invoice.payment_type || "cash",
+    netTotal: Number(invoice.net_total || 0),
+    costTotal: items.reduce((sum, item) => {
+      return sum + Number(item.cost_price || 0) * Number(item.quantity || 0);
+    }, 0),
+  };
+}
+
+function normalizePurchaseInvoice(invoice) {
+  return {
+    id: invoice.id,
+    number: invoice.id,
+    date: formatDate(invoice.invoice_date || invoice.created_at),
+    supplierName: invoice.supplier_name || "مورد غير محدد",
+    paymentType: invoice.payment_type || "cash",
+    total: Number(invoice.total || 0),
+  };
+}
+
+function normalizeVoucher(voucher) {
+  return {
+    id: voucher.id,
+    number: voucher.id,
+    type: voucher.type,
+    date: formatDate(voucher.voucher_date || voucher.created_at),
+    partyName: voucher.party_name || "غير محدد",
+    amount: Number(voucher.amount || 0),
+    description: voucher.description || "",
+    debitAccount: voucher.debit_account || "",
+    creditAccount: voucher.credit_account || "",
+  };
+}
+
+function makeEntry({
+  id,
+  date,
+  debitAccount,
+  creditAccount,
+  description,
+  amount,
+  sourceLabel,
+}) {
+  return {
+    id,
+    date,
+    debitAccount,
+    creditAccount,
+    description,
+    amount: Number(amount || 0),
+    sourceLabel,
+  };
+}
+
+function getAccountInfo(accountName) {
+  return defaultAccounts.find((account) => account.name === accountName);
+}
+
+function getAccountType(accountName) {
+  const account = getAccountInfo(accountName);
+  return account ? account.type : "unknown";
+}
+
 function TrialBalancePage() {
+  const [salesInvoices, setSalesInvoices] = useState([]);
+  const [purchaseInvoices, setPurchaseInvoices] = useState([]);
+  const [vouchers, setVouchers] = useState([]);
+
+  const [isLoading, setIsLoading] = useState(true);
+  const [toast, setToast] = useState(null);
+
+  useEffect(() => {
+    loadTrialBalanceData();
+  }, []);
+
+  function showToast(message, type = "success") {
+    setToast({ message, type });
+
+    setTimeout(() => {
+      setToast(null);
+    }, 3500);
+  }
+
   function printTrialBalance() {
     window.print();
   }
 
-  const entries = JSON.parse(localStorage.getItem("journalEntries")) || [];
-  const accountsList =
-    JSON.parse(localStorage.getItem("accounts")) || defaultAccounts;
+  async function loadTrialBalanceData() {
+    setIsLoading(true);
 
-  function getAccountInfo(accountName) {
-    return accountsList.find((account) => account.name === accountName);
+    try {
+      const token = getAuthToken();
+
+      const [salesResponse, purchasesResponse, vouchersResponse] =
+        await Promise.all([
+          fetch(`${API_BASE_URL}/sales-invoices`, {
+            headers: {
+              Accept: "application/json",
+              Authorization: `Bearer ${token}`,
+            },
+          }),
+          fetch(`${API_BASE_URL}/purchase-invoices`, {
+            headers: {
+              Accept: "application/json",
+              Authorization: `Bearer ${token}`,
+            },
+          }),
+          fetch(`${API_BASE_URL}/vouchers`, {
+            headers: {
+              Accept: "application/json",
+              Authorization: `Bearer ${token}`,
+            },
+          }),
+        ]);
+
+      const salesData = await salesResponse.json();
+      const purchasesData = await purchasesResponse.json();
+      const vouchersData = await vouchersResponse.json();
+
+      if (!salesResponse.ok) {
+        showToast(salesData.message || "تعذر تحميل فواتير المبيعات.", "error");
+      }
+
+      if (!purchasesResponse.ok) {
+        showToast(
+          purchasesData.message || "تعذر تحميل فواتير المشتريات.",
+          "error"
+        );
+      }
+
+      if (!vouchersResponse.ok) {
+        showToast(vouchersData.message || "تعذر تحميل السندات.", "error");
+      }
+
+      setSalesInvoices(
+        Array.isArray(salesData.sales_invoices)
+          ? salesData.sales_invoices.map(normalizeSalesInvoice)
+          : []
+      );
+
+      setPurchaseInvoices(
+        Array.isArray(purchasesData.purchase_invoices)
+          ? purchasesData.purchase_invoices.map(normalizePurchaseInvoice)
+          : []
+      );
+
+      setVouchers(
+        Array.isArray(vouchersData.vouchers)
+          ? vouchersData.vouchers.map(normalizeVoucher)
+          : []
+      );
+    } catch {
+      showToast(
+        "تعذر الاتصال بالسيرفر. تأكد أن Laravel يعمل على http://127.0.0.1:8000",
+        "error"
+      );
+    }
+
+    setIsLoading(false);
   }
 
-  function getAccountType(accountName) {
-    const account = getAccountInfo(accountName);
-    return account ? account.type : "unknown";
-  }
+  const entries = useMemo(() => {
+    const generatedEntries = [];
+
+    salesInvoices.forEach((invoice) => {
+      const debitAccount =
+        invoice.paymentType === "credit" ? "العملاء" : "الصندوق";
+
+      generatedEntries.push(
+        makeEntry({
+          id: `sale-revenue-${invoice.id}`,
+          date: invoice.date,
+          debitAccount,
+          creditAccount: "المبيعات",
+          description: `إثبات فاتورة بيع رقم ${invoice.number} - ${invoice.customerName}`,
+          amount: invoice.netTotal,
+          sourceLabel: "مبيعات",
+        })
+      );
+
+      if (invoice.costTotal > 0) {
+        generatedEntries.push(
+          makeEntry({
+            id: `sale-cost-${invoice.id}`,
+            date: invoice.date,
+            debitAccount: "تكلفة البضاعة المباعة",
+            creditAccount: "المخزون",
+            description: `إثبات تكلفة البضاعة المباعة لفاتورة بيع رقم ${invoice.number}`,
+            amount: invoice.costTotal,
+            sourceLabel: "تكلفة مبيعات",
+          })
+        );
+      }
+    });
+
+    purchaseInvoices.forEach((invoice) => {
+      const creditAccount =
+        invoice.paymentType === "credit" ? "الموردون" : "الصندوق";
+
+      generatedEntries.push(
+        makeEntry({
+          id: `purchase-${invoice.id}`,
+          date: invoice.date,
+          debitAccount: "المخزون",
+          creditAccount,
+          description: `إثبات فاتورة شراء رقم ${invoice.number} - ${invoice.supplierName}`,
+          amount: invoice.total,
+          sourceLabel: "مشتريات",
+        })
+      );
+    });
+
+    vouchers.forEach((voucher) => {
+      generatedEntries.push(
+        makeEntry({
+          id: `voucher-${voucher.id}`,
+          date: voucher.date,
+          debitAccount: voucher.debitAccount,
+          creditAccount: voucher.creditAccount,
+          description:
+            voucher.description ||
+            `${voucher.type === "receipt" ? "سند قبض" : "سند صرف"} رقم ${
+              voucher.number
+            } - ${voucher.partyName}`,
+          amount: voucher.amount,
+          sourceLabel: voucher.type === "receipt" ? "سند قبض" : "سند صرف",
+        })
+      );
+    });
+
+    return generatedEntries.filter((entry) => Number(entry.amount || 0) > 0);
+  }, [salesInvoices, purchaseInvoices, vouchers]);
 
   const trialBalance = useMemo(() => {
     const accountsMap = {};
@@ -69,26 +305,29 @@ function TrialBalancePage() {
         };
       }
 
-      accountsMap[entry.debitAccount].debit += Number(entry.amount);
-      accountsMap[entry.creditAccount].credit += Number(entry.amount);
+      accountsMap[entry.debitAccount].debit += Number(entry.amount || 0);
+      accountsMap[entry.creditAccount].credit += Number(entry.amount || 0);
     });
 
-    return Object.values(accountsMap);
-  }, [entries, accountsList]);
+    return Object.values(accountsMap).sort((a, b) => {
+      return a.name.localeCompare(b.name, "ar");
+    });
+  }, [entries]);
 
   const totalDebit = trialBalance.reduce((sum, account) => {
-    return sum + account.debit;
+    return sum + Number(account.debit || 0);
   }, 0);
 
   const totalCredit = trialBalance.reduce((sum, account) => {
-    return sum + account.credit;
+    return sum + Number(account.credit || 0);
   }, 0);
 
-  const isBalanced = totalDebit === totalCredit;
+  const difference = Math.abs(totalDebit - totalCredit);
+  const isBalanced = difference < 0.01;
 
-  const unknownAccounts = trialBalance.filter(
-    (account) => account.type === "unknown"
-  );
+  const unknownAccounts = trialBalance.filter((account) => {
+    return account.type === "unknown";
+  });
 
   return (
     <div className="page">
@@ -97,12 +336,22 @@ function TrialBalancePage() {
           <div>
             <h1 className="section-title">ميزان المراجعة</h1>
             <p className="section-subtitle">
-              يتم إنشاء هذا الميزان تلقائيًا من القيود المسجلة في دفتر اليومية،
-              مع عرض نوع كل حساب من إدارة الحسابات.
+              يتم إنشاء ميزان المراجعة تلقائيًا من قيود Laravel الناتجة عن
+              المبيعات والمشتريات والسندات.
             </p>
           </div>
 
           <div className="report-actions no-print">
+            <button
+              type="button"
+              className="secondary-btn"
+              onClick={loadTrialBalanceData}
+              disabled={isLoading}
+            >
+              <RefreshCcw size={18} />
+              {isLoading ? "جاري التحديث..." : "تحديث من السيرفر"}
+            </button>
+
             <button className="primary-btn" onClick={printTrialBalance}>
               <Printer size={18} />
               طباعة / حفظ PDF
@@ -112,12 +361,12 @@ function TrialBalancePage() {
           <div className="stats-box">
             <div>
               <span>إجمالي المدين</span>
-              <strong>{totalDebit.toLocaleString()} ريال</strong>
+              <strong>{formatCurrency(totalDebit)}</strong>
             </div>
 
             <div>
               <span>إجمالي الدائن</span>
-              <strong>{totalCredit.toLocaleString()} ريال</strong>
+              <strong>{formatCurrency(totalCredit)}</strong>
             </div>
           </div>
         </div>
@@ -126,8 +375,8 @@ function TrialBalancePage() {
           <div className="balance-status error">
             <AlertCircle size={22} />
             <span>
-              توجد حسابات غير مصنفة. افتح إدارة الحسابات وأضف هذه الحسابات حتى
-              تظهر التقارير بشكل أدق.
+              توجد حسابات غير مصنفة. أضف هذه الحسابات لاحقًا في إدارة الحسابات
+              أو حدّث قائمة الحسابات الافتراضية.
             </span>
           </div>
         )}
@@ -140,7 +389,10 @@ function TrialBalancePage() {
           {isBalanced ? (
             <span>ميزان المراجعة متوازن: إجمالي المدين يساوي إجمالي الدائن</span>
           ) : (
-            <span>يوجد فرق في الميزان: إجمالي المدين لا يساوي إجمالي الدائن</span>
+            <span>
+              يوجد فرق في الميزان بمبلغ {formatCurrency(difference)}: إجمالي
+              المدين لا يساوي إجمالي الدائن
+            </span>
           )}
         </div>
 
@@ -151,9 +403,11 @@ function TrialBalancePage() {
               <h2>أرصدة الحسابات</h2>
             </div>
 
-            {trialBalance.length === 0 ? (
+            {isLoading ? (
+              <p className="empty-text">جاري تحميل ميزان المراجعة من السيرفر...</p>
+            ) : trialBalance.length === 0 ? (
               <p className="empty-text">
-                لا توجد بيانات بعد. أضف قيودًا من صفحة دفتر اليومية أولًا.
+                لا توجد بيانات بعد. أنشئ فاتورة بيع أو شراء أو سندًا أولًا.
               </p>
             ) : (
               <div className="table-wrapper">
@@ -177,8 +431,8 @@ function TrialBalancePage() {
                         account.debit > account.credit
                           ? "مدين"
                           : account.credit > account.debit
-                            ? "دائن"
-                            : "متوازن";
+                          ? "دائن"
+                          : "متوازن";
 
                       return (
                         <tr key={account.name}>
@@ -194,9 +448,9 @@ function TrialBalancePage() {
                             </span>
                           </td>
 
-                          <td>{account.debit.toLocaleString()} ريال</td>
+                          <td>{formatCurrency(account.debit)}</td>
 
-                          <td>{account.credit.toLocaleString()} ريال</td>
+                          <td>{formatCurrency(account.credit)}</td>
 
                           <td>
                             <span
@@ -204,15 +458,15 @@ function TrialBalancePage() {
                                 balanceType === "مدين"
                                   ? "debit-badge"
                                   : balanceType === "دائن"
-                                    ? "credit-badge"
-                                    : "neutral-badge"
+                                  ? "credit-badge"
+                                  : "neutral-badge"
                               }
                             >
                               {balanceType}
                             </span>
                           </td>
 
-                          <td>{balance.toLocaleString()} ريال</td>
+                          <td>{formatCurrency(balance)}</td>
                         </tr>
                       );
                     })}
@@ -220,12 +474,10 @@ function TrialBalancePage() {
                     <tr className="total-row">
                       <td>الإجمالي</td>
                       <td>-</td>
-                      <td>{totalDebit.toLocaleString()} ريال</td>
-                      <td>{totalCredit.toLocaleString()} ريال</td>
+                      <td>{formatCurrency(totalDebit)}</td>
+                      <td>{formatCurrency(totalCredit)}</td>
                       <td>-</td>
-                      <td>
-                        {Math.abs(totalDebit - totalCredit).toLocaleString()} ريال
-                      </td>
+                      <td>{formatCurrency(difference)}</td>
                     </tr>
                   </tbody>
                 </table>
@@ -265,12 +517,15 @@ function TrialBalancePage() {
             </div>
 
             <p>
-              ميزان المراجعة يساعدك تتأكد أن القيود المحاسبية مسجلة بشكل صحيح
-              من ناحية تساوي المدين والدائن، كما يوضح نوع كل حساب لتسهيل الفهم.
+              ميزان المراجعة يساعدك تتأكد أن كل قيود العمليات متوازنة، لأنه
+              يجمع كل الحسابات المدينة والدائنة الناتجة عن البيع والشراء
+              والسندات.
             </p>
           </div>
         </div>
       </div>
+
+      <AppToast toast={toast} onClose={() => setToast(null)} />
     </div>
   );
 }

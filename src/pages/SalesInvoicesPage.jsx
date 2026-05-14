@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   ReceiptText,
   Search,
@@ -8,106 +8,66 @@ import {
   User,
   Wallet,
   PackageCheck,
+  RefreshCcw,
 } from "lucide-react";
 
 import AppToast from "../components/AppToast";
 import AppConfirm from "../components/AppConfirm";
+import { getAuthToken } from "../utils/auth";
 
-const INVOICES_KEYS = ["mohasbti_sales_invoices", "salesInvoices"];
-
-function readArray(key) {
-  try {
-    const raw = localStorage.getItem(key);
-    const data = JSON.parse(raw);
-    return Array.isArray(data) ? data : [];
-  } catch {
-    return [];
-  }
-}
-
-function writeArray(key, value) {
-  localStorage.setItem(key, JSON.stringify(value));
-}
+const API_BASE_URL = "http://127.0.0.1:8000/api";
 
 function formatCurrency(value) {
   return `${Number(value || 0).toLocaleString("ar-YE")} ريال`;
 }
 
-function normalizeInvoice(invoice, index) {
-  const items = invoice.lines || invoice.items || [];
-
-  return {
-    id: invoice.id ?? `invoice-${index}`,
-    invoiceNumber: invoice.invoiceNumber ?? invoice.number ?? index + 1,
-    date: invoice.date ?? "",
-    customerName: invoice.customerName ?? "عميل نقدي",
-    paymentMethod: invoice.paymentMethod ?? invoice.paymentType ?? "نقدًا",
-    description: invoice.description ?? invoice.statement ?? "فاتورة بيع",
-    items,
-    grossTotal:
-      invoice.totals?.gross ??
-      invoice.grossTotal ??
-      items.reduce((sum, item) => {
-        const qty = Number(item.qty ?? item.quantity ?? 0);
-        const price = Number(item.unitPrice ?? item.sellingPrice ?? 0);
-        return sum + qty * price;
-      }, 0),
-    discount:
-      invoice.totals?.discount ??
-      invoice.discount ??
-      invoice.totalDiscount ??
-      0,
-    netTotal:
-      invoice.totals?.net ??
-      invoice.total ??
-      invoice.netTotal ??
-      0,
-    profit:
-      invoice.profit ??
-      items.reduce((sum, item) => {
-        const qty = Number(item.qty ?? item.quantity ?? 0);
-        const unitPrice = Number(item.unitPrice ?? item.sellingPrice ?? 0);
-        const costPrice = Number(item.costPrice ?? item.purchasePrice ?? 0);
-        return sum + (unitPrice - costPrice) * qty;
-      }, 0),
-  };
+function getPaymentLabel(type) {
+  if (type === "cash") return "نقدًا";
+  if (type === "credit") return "آجل";
+  return type || "-";
 }
 
-function loadInvoices() {
-  const allInvoices = [];
+function normalizeSalesInvoice(invoice) {
+  const items = Array.isArray(invoice.items)
+    ? invoice.items.map((item) => ({
+        id: item.id,
+        productId: item.product_id,
+        productName: item.product?.name || "منتج غير معروف",
+        code: item.product?.code || "-",
+        quantity: Number(item.quantity || 0),
+        salePrice: Number(item.sale_price || 0),
+        costPrice: Number(item.cost_price || 0),
+        discountPercent: Number(item.discount_percent || 0),
+        discountValue: Number(item.discount_value || 0),
+        grossTotal: Number(item.gross_total || 0),
+        netTotal: Number(item.net_total || 0),
+        profitTotal: Number(item.profit_total || 0),
+      }))
+    : [];
 
-  INVOICES_KEYS.forEach((key) => {
-    const data = readArray(key);
-
-    data.forEach((invoice) => {
-      allInvoices.push({
-        ...invoice,
-        storageKey: key,
-      });
-    });
-  });
-
-  const uniqueMap = new Map();
-
-  allInvoices.forEach((invoice, index) => {
-    const normalized = normalizeInvoice(invoice, index);
-
-    uniqueMap.set(String(normalized.id), {
-      ...normalized,
-      original: invoice,
-      storageKey: invoice.storageKey,
-    });
-  });
-
-  return Array.from(uniqueMap.values()).sort((a, b) => {
-    return Number(b.invoiceNumber) - Number(a.invoiceNumber);
-  });
+  return {
+    id: invoice.id,
+    invoiceNumber: invoice.id,
+    date: String(invoice.invoice_date || invoice.created_at || "").slice(0, 10),
+    customerName: invoice.customer_name || "عميل نقدي",
+    paymentType: invoice.payment_type || "cash",
+    paymentMethod: getPaymentLabel(invoice.payment_type),
+    description: "فاتورة بيع",
+    items,
+    grossTotal: Number(invoice.gross_total || 0),
+    discount: Number(invoice.discount_total || 0),
+    netTotal: Number(invoice.net_total || 0),
+    profit: Number(invoice.profit_total || 0),
+    createdAt: invoice.created_at,
+    original: invoice,
+  };
 }
 
 function SalesInvoicesPage() {
   const [searchTerm, setSearchTerm] = useState("");
   const [selectedInvoiceId, setSelectedInvoiceId] = useState(null);
-  const [invoices, setInvoices] = useState(() => loadInvoices());
+  const [invoices, setInvoices] = useState([]);
+  const [isLoading, setIsLoading] = useState(true);
 
   const [toast, setToast] = useState(null);
   const [confirmState, setConfirmState] = useState({
@@ -116,6 +76,54 @@ function SalesInvoicesPage() {
     title: "",
     message: "",
   });
+
+  useEffect(() => {
+    loadSalesInvoices();
+  }, []);
+
+  function showToast(message, type = "success") {
+    setToast({ message, type });
+
+    setTimeout(() => {
+      setToast(null);
+    }, 3500);
+  }
+
+  async function loadSalesInvoices() {
+    setIsLoading(true);
+
+    try {
+      const token = getAuthToken();
+
+      const response = await fetch(`${API_BASE_URL}/sales-invoices`, {
+        headers: {
+          Accept: "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        showToast(data.message || "تعذر تحميل فواتير المبيعات.", "error");
+        setIsLoading(false);
+        return;
+      }
+
+      const normalizedInvoices = Array.isArray(data.sales_invoices)
+        ? data.sales_invoices.map(normalizeSalesInvoice)
+        : [];
+
+      setInvoices(normalizedInvoices);
+    } catch {
+      showToast(
+        "تعذر الاتصال بالسيرفر. تأكد أن Laravel يعمل على http://127.0.0.1:8000",
+        "error"
+      );
+    }
+
+    setIsLoading(false);
+  }
 
   const filteredInvoices = invoices.filter((invoice) => {
     const keyword = searchTerm.trim().toLowerCase();
@@ -134,33 +142,25 @@ function SalesInvoicesPage() {
     (invoice) => String(invoice.id) === String(selectedInvoiceId)
   );
 
-  const totalSales = invoices.reduce((sum, invoice) => {
-    return sum + Number(invoice.netTotal || 0);
-  }, 0);
-
-  const totalProfit = invoices.reduce((sum, invoice) => {
-    return sum + Number(invoice.profit || 0);
-  }, 0);
-
-  const totalItems = invoices.reduce((sum, invoice) => {
-    return sum + invoice.items.length;
-  }, 0);
-
   const summary = useMemo(() => {
+    const totalSales = invoices.reduce((sum, invoice) => {
+      return sum + Number(invoice.netTotal || 0);
+    }, 0);
+
+    const totalProfit = invoices.reduce((sum, invoice) => {
+      return sum + Number(invoice.profit || 0);
+    }, 0);
+
+    const totalItems = invoices.reduce((sum, invoice) => {
+      return sum + invoice.items.length;
+    }, 0);
+
     return {
       totalSales,
       totalProfit,
       totalItems,
     };
-  }, [totalSales, totalProfit, totalItems]);
-
-  function showToast(message, type = "success") {
-    setToast({ message, type });
-
-    setTimeout(() => {
-      setToast(null);
-    }, 3500);
-  }
+  }, [invoices]);
 
   function requestDeleteInvoice(invoice) {
     setConfirmState({
@@ -168,7 +168,7 @@ function SalesInvoicesPage() {
       invoice,
       title: `حذف فاتورة رقم ${invoice.invoiceNumber}`,
       message:
-        "هل تريد حذف هذه الفاتورة؟ هذا الحذف للتجربة فقط ولن يرجع المخزون تلقائيًا.",
+        "هل تريد حذف هذه الفاتورة؟ ملاحظة: حذف فاتورة البيع لا يرجع المخزون تلقائيًا.",
     });
   }
 
@@ -181,7 +181,7 @@ function SalesInvoicesPage() {
     });
   }
 
-  function confirmDeleteInvoice() {
+  async function confirmDeleteInvoice() {
     const invoice = confirmState.invoice;
 
     if (!invoice) {
@@ -190,28 +190,45 @@ function SalesInvoicesPage() {
       return;
     }
 
-    const currentInvoices = readArray(invoice.storageKey);
+    try {
+      const token = getAuthToken();
 
-    const updatedInvoices = currentInvoices.filter((item) => {
-      const id = normalizeInvoice(item, 0).id;
-      return String(id) !== String(invoice.id);
-    });
+      const response = await fetch(
+        `${API_BASE_URL}/sales-invoices/${invoice.id}`,
+        {
+          method: "DELETE",
+          headers: {
+            Accept: "application/json",
+            Authorization: `Bearer ${token}`,
+          },
+        }
+      );
 
-    writeArray(invoice.storageKey, updatedInvoices);
+      const data = await response.json();
 
-    const updatedVisibleInvoices = invoices.filter((item) => {
-      return String(item.id) !== String(invoice.id);
-    });
+      if (!response.ok) {
+        showToast(data.message || "تعذر حذف فاتورة البيع.", "error");
+        cancelDeleteInvoice();
+        return;
+      }
 
-    setInvoices(updatedVisibleInvoices);
+      const updatedInvoices = invoices.filter((item) => {
+        return String(item.id) !== String(invoice.id);
+      });
 
-    if (String(selectedInvoiceId) === String(invoice.id)) {
-      setSelectedInvoiceId(null);
+      setInvoices(updatedInvoices);
+
+      if (String(selectedInvoiceId) === String(invoice.id)) {
+        setSelectedInvoiceId(null);
+      }
+
+      cancelDeleteInvoice();
+
+      showToast(data.message || `تم حذف فاتورة رقم ${invoice.invoiceNumber}.`);
+    } catch {
+      cancelDeleteInvoice();
+      showToast("تعذر الاتصال بالسيرفر أثناء حذف فاتورة البيع.", "error");
     }
-
-    cancelDeleteInvoice();
-
-    showToast(`تم حذف فاتورة رقم ${invoice.invoiceNumber} بنجاح.`);
   }
 
   return (
@@ -221,8 +238,8 @@ function SalesInvoicesPage() {
           <div>
             <h1 className="section-title">فواتير المبيعات</h1>
             <p className="section-subtitle">
-              هنا تظهر فواتير البيع المحفوظة من نقطة البيع، مع تفاصيل الأصناف
-              والإجماليات والربح المتوقع.
+              هنا تظهر فواتير البيع المحفوظة في قاعدة بيانات Laravel، مع تفاصيل
+              الأصناف والإجماليات والربح.
             </p>
           </div>
 
@@ -277,6 +294,15 @@ function SalesInvoicesPage() {
                 <p>ابحث واعرض تفاصيل أي فاتورة بيع.</p>
               </div>
 
+              <button
+                type="button"
+                className="secondary-btn"
+                onClick={loadSalesInvoices}
+              >
+                <RefreshCcw size={18} />
+                تحديث
+              </button>
+
               <div className="sales-search">
                 <Search size={18} />
                 <input
@@ -288,7 +314,11 @@ function SalesInvoicesPage() {
               </div>
             </div>
 
-            {filteredInvoices.length === 0 ? (
+            {isLoading ? (
+              <div className="empty-search">
+                جاري تحميل فواتير المبيعات من السيرفر...
+              </div>
+            ) : filteredInvoices.length === 0 ? (
               <div className="empty-search">
                 لا توجد فواتير مطابقة للبحث الحالي.
               </div>
@@ -324,7 +354,13 @@ function SalesInvoicesPage() {
                         <td>{invoice.date}</td>
                         <td>{invoice.customerName}</td>
                         <td>
-                          <span className="payment-badge">
+                          <span
+                            className={
+                              invoice.paymentType === "credit"
+                                ? "purchase-payment-badge credit"
+                                : "purchase-payment-badge cash"
+                            }
+                          >
                             {invoice.paymentMethod}
                           </span>
                         </td>
@@ -394,7 +430,13 @@ function SalesInvoicesPage() {
                     <p>{selectedInvoice.description}</p>
                   </div>
 
-                  <span className="payment-badge">
+                  <span
+                    className={
+                      selectedInvoice.paymentType === "credit"
+                        ? "purchase-payment-badge credit"
+                        : "purchase-payment-badge cash"
+                    }
+                  >
                     {selectedInvoice.paymentMethod}
                   </span>
                 </div>
@@ -424,9 +466,11 @@ function SalesInvoicesPage() {
                     <thead>
                       <tr>
                         <th>م</th>
+                        <th>الكود</th>
                         <th>الصنف</th>
                         <th>الكمية</th>
                         <th>سعر البيع</th>
+                        <th>الخصم</th>
                         <th>الصافي</th>
                         <th>الربح</th>
                       </tr>
@@ -434,42 +478,33 @@ function SalesInvoicesPage() {
 
                     <tbody>
                       {selectedInvoice.items.map((item, index) => {
-                        const qty = Number(item.qty ?? item.quantity ?? 0);
-                        const price = Number(
-                          item.unitPrice ?? item.sellingPrice ?? 0
-                        );
-                        const cost = Number(
-                          item.costPrice ?? item.purchasePrice ?? 0
-                        );
-
-                        const net =
-                          item.net ??
-                          item.total ??
-                          qty * price -
-                            (Number(item.discountValue ?? 0) +
-                              qty *
-                                price *
-                                (Number(item.discountPercent ?? 0) / 100));
-
-                        const profit =
-                          item.totalProfit ?? Number(net) - cost * qty;
-
                         return (
-                          <tr key={item.lineId ?? item.id ?? index}>
+                          <tr key={item.id ?? index}>
                             <td>{index + 1}</td>
+
+                            <td>{item.code}</td>
+
                             <td>
-                              <strong>{item.name ?? item.productName}</strong>
+                              <strong>{item.productName}</strong>
                             </td>
-                            <td>{qty}</td>
-                            <td>{formatCurrency(price)}</td>
-                            <td>{formatCurrency(net)}</td>
+
+                            <td>{item.quantity}</td>
+
+                            <td>{formatCurrency(item.salePrice)}</td>
+
+                            <td>{formatCurrency(item.discountValue)}</td>
+
+                            <td>{formatCurrency(item.netTotal)}</td>
+
                             <td>
                               <strong
                                 className={
-                                  profit >= 0 ? "good-text" : "bad-text"
+                                  item.profitTotal >= 0
+                                    ? "good-text"
+                                    : "bad-text"
                                 }
                               >
-                                {formatCurrency(profit)}
+                                {formatCurrency(item.profitTotal)}
                               </strong>
                             </td>
                           </tr>

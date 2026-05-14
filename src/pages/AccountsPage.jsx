@@ -7,25 +7,14 @@ import {
   Pencil,
   XCircle,
   Save,
+  RefreshCcw,
 } from "lucide-react";
 
 import AppToast from "../components/AppToast";
 import AppConfirm from "../components/AppConfirm";
+import { getAuthToken } from "../utils/auth";
 
-const defaultAccounts = [
-  { id: 1, name: "الصندوق", type: "asset", isDefault: true },
-  { id: 2, name: "البنك", type: "asset", isDefault: true },
-  { id: 3, name: "العملاء", type: "asset", isDefault: true },
-  { id: 4, name: "المخزون", type: "asset", isDefault: true },
-  { id: 5, name: "الأثاث", type: "asset", isDefault: true },
-  { id: 6, name: "معدات", type: "asset", isDefault: true },
-  { id: 7, name: "الموردون", type: "liability", isDefault: true },
-  { id: 8, name: "رأس المال", type: "equity", isDefault: true },
-  { id: 9, name: "المبيعات", type: "revenue", isDefault: true },
-  { id: 10, name: "المشتريات", type: "expense", isDefault: true },
-  { id: 11, name: "مصروف الإيجار", type: "expense", isDefault: true },
-  { id: 12, name: "مصروف الرواتب", type: "expense", isDefault: true },
-];
+const API_BASE_URL = "http://127.0.0.1:8000/api";
 
 const accountTypes = {
   asset: "أصل",
@@ -43,43 +32,33 @@ const accountTypeDescriptions = {
   expense: "المصروفات طبيعتها مدينة مثل الإيجار والرواتب.",
 };
 
-function readArray(key) {
-  try {
-    const raw = localStorage.getItem(key);
-    const data = JSON.parse(raw);
-    return Array.isArray(data) ? data : [];
-  } catch {
-    return [];
-  }
+function normalizeAccount(account) {
+  return {
+    id: account.id,
+    name: account.name,
+    type: account.type,
+    isDefault: Boolean(account.is_default),
+    createdAt: account.created_at,
+  };
 }
 
 function AccountsPage() {
-  const [accounts, setAccounts] = useState(() => {
-    try {
-      const savedAccounts = localStorage.getItem("accounts");
-      const parsedAccounts = savedAccounts ? JSON.parse(savedAccounts) : defaultAccounts;
-      return Array.isArray(parsedAccounts) ? parsedAccounts : defaultAccounts;
-    } catch {
-      return defaultAccounts;
-    }
-  });
-
+  const [accounts, setAccounts] = useState([]);
   const [editingId, setEditingId] = useState(null);
   const [searchTerm, setSearchTerm] = useState("");
   const [typeFilter, setTypeFilter] = useState("all");
+  const [isLoading, setIsLoading] = useState(true);
+  const [isSaving, setIsSaving] = useState(false);
 
   const [toast, setToast] = useState(null);
   const [confirmState, setConfirmState] = useState({
     open: false,
     type: "",
     accountId: null,
-    oldAccountName: "",
-    newAccountName: "",
     title: "",
     message: "",
     confirmText: "موافق",
     danger: false,
-    pendingUpdatedAccounts: null,
   });
 
   const [form, setForm] = useState({
@@ -88,8 +67,8 @@ function AccountsPage() {
   });
 
   useEffect(() => {
-    localStorage.setItem("accounts", JSON.stringify(accounts));
-  }, [accounts]);
+    loadAccounts();
+  }, []);
 
   function showToast(message, type = "success") {
     setToast({ message, type });
@@ -99,28 +78,58 @@ function AccountsPage() {
     }, 3500);
   }
 
+  async function loadAccounts() {
+    setIsLoading(true);
+
+    try {
+      const token = getAuthToken();
+
+      const response = await fetch(`${API_BASE_URL}/accounts`, {
+        headers: {
+          Accept: "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        showToast(data.message || "تعذر تحميل الحسابات من السيرفر.", "error");
+        setIsLoading(false);
+        return;
+      }
+
+      const normalizedAccounts = Array.isArray(data.accounts)
+        ? data.accounts.map(normalizeAccount)
+        : [];
+
+      setAccounts(normalizedAccounts);
+    } catch {
+      showToast(
+        "تعذر الاتصال بالسيرفر. تأكد أن Laravel يعمل على http://127.0.0.1:8000",
+        "error"
+      );
+    }
+
+    setIsLoading(false);
+  }
+
   function openConfirm({
     type,
     accountId = null,
-    oldAccountName = "",
-    newAccountName = "",
     title,
     message,
     confirmText = "موافق",
     danger = false,
-    pendingUpdatedAccounts = null,
   }) {
     setConfirmState({
       open: true,
       type,
       accountId,
-      oldAccountName,
-      newAccountName,
       title,
       message,
       confirmText,
       danger,
-      pendingUpdatedAccounts,
     });
   }
 
@@ -129,13 +138,10 @@ function AccountsPage() {
       open: false,
       type: "",
       accountId: null,
-      oldAccountName: "",
-      newAccountName: "",
       title: "",
       message: "",
       confirmText: "موافق",
       danger: false,
-      pendingUpdatedAccounts: null,
     });
   }
 
@@ -157,7 +163,7 @@ function AccountsPage() {
     setEditingId(null);
   }
 
-  function saveAccount(e) {
+  async function saveAccount(e) {
     e.preventDefault();
 
     const accountName = form.name.trim();
@@ -176,71 +182,62 @@ function AccountsPage() {
       return;
     }
 
-    if (editingId) {
-      const oldAccount = accounts.find((account) => account.id === editingId);
+    setIsSaving(true);
 
-      if (!oldAccount) {
-        showToast("لم يتم العثور على الحساب المطلوب تعديله.", "error");
+    try {
+      const token = getAuthToken();
+
+      const isEditing = Boolean(editingId);
+
+      const url = isEditing
+        ? `${API_BASE_URL}/accounts/${editingId}`
+        : `${API_BASE_URL}/accounts`;
+
+      const response = await fetch(url, {
+        method: isEditing ? "PUT" : "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          name: accountName,
+          type: form.type,
+        }),
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        const firstError =
+          data?.errors?.name?.[0] || data?.errors?.type?.[0] || data?.message;
+
+        showToast(firstError || "تعذر حفظ الحساب.", "error");
+        setIsSaving(false);
         return;
       }
 
-      const oldAccountName = oldAccount.name;
-      const hasNameChanged = oldAccountName !== accountName;
+      const savedAccount = normalizeAccount(data.account);
 
-      const updatedAccounts = accounts.map((account) => {
-        if (account.id === editingId) {
-          return {
-            ...account,
-            name: accountName,
-            type: form.type,
-          };
-        }
+      if (isEditing) {
+        setAccounts((prev) =>
+          prev.map((account) =>
+            account.id === editingId ? savedAccount : account
+          )
+        );
 
-        return account;
-      });
-
-      if (hasNameChanged) {
-        const savedEntries = readArray("journalEntries");
-
-        const accountIsUsed = savedEntries.some((entry) => {
-          return (
-            entry.debitAccount === oldAccountName ||
-            entry.creditAccount === oldAccountName
-          );
-        });
-
-        if (accountIsUsed) {
-          openConfirm({
-            type: "updateEntries",
-            oldAccountName,
-            newAccountName: accountName,
-            title: "تحديث اسم الحساب في القيود",
-            message: `تم تغيير اسم الحساب من "${oldAccountName}" إلى "${accountName}". هل تريد تحديث القيود القديمة التي تستخدم هذا الحساب أيضًا؟`,
-            confirmText: "نعم، حدث القيود",
-            danger: false,
-            pendingUpdatedAccounts: updatedAccounts,
-          });
-
-          return;
-        }
+        showToast(data.message || "تم تحديث الحساب بنجاح.");
+      } else {
+        setAccounts((prev) => [...prev, savedAccount]);
+        showToast(data.message || "تمت إضافة الحساب بنجاح.");
       }
 
-      setAccounts(updatedAccounts);
       resetForm();
-      showToast("تم تحديث الحساب بنجاح.");
-      return;
+    } catch {
+      showToast("تعذر الاتصال بالسيرفر أثناء حفظ الحساب.", "error");
     }
 
-    const newAccount = {
-      id: Date.now(),
-      name: accountName,
-      type: form.type,
-      isDefault: false,
-    };
-
-    setAccounts([...accounts, newAccount]);
-    resetForm();
-    showToast("تمت إضافة الحساب بنجاح.");
+    setIsSaving(false);
   }
 
   function startEdit(account) {
@@ -267,28 +264,11 @@ function AccountsPage() {
       return;
     }
 
-    const savedEntries = readArray("journalEntries");
-
-    const accountIsUsed = savedEntries.some((entry) => {
-      return (
-        entry.debitAccount === account.name ||
-        entry.creditAccount === account.name
-      );
-    });
-
-    if (accountIsUsed) {
-      showToast(
-        `لا يمكن حذف حساب "${account.name}" لأنه مستخدم في قيود محاسبية قديمة. احذف أو عدّل القيود المرتبطة به أولًا.`,
-        "error"
-      );
-      return;
-    }
-
     openConfirm({
       type: "delete",
       accountId: id,
       title: "حذف حساب",
-      message: `هل تريد حذف حساب "${account.name}"؟`,
+      message: `هل تريد حذف حساب "${account.name}" من قاعدة البيانات؟`,
       confirmText: "نعم، حذف",
       danger: true,
     });
@@ -299,77 +279,99 @@ function AccountsPage() {
       type: "reset",
       title: "استعادة الحسابات الافتراضية",
       message:
-        "سيتم حذف الحسابات المخصصة واستعادة الحسابات الافتراضية الأساسية. هل تريد المتابعة؟",
+        "سيتم حذف الحسابات المخصصة واستعادة الحسابات الافتراضية من قاعدة البيانات. هل تريد المتابعة؟",
       confirmText: "استعادة الحسابات",
       danger: true,
     });
   }
 
-  function confirmAction() {
+  async function confirmAction() {
     if (confirmState.type === "delete") {
-      const account = accounts.find((item) => item.id === confirmState.accountId);
-
-      setAccounts(accounts.filter((item) => item.id !== confirmState.accountId));
-
-      if (editingId === confirmState.accountId) {
-        resetForm();
-      }
-
-      closeConfirm();
-      showToast(account ? `تم حذف حساب "${account.name}" بنجاح.` : "تم حذف الحساب.");
+      await confirmDeleteAccount();
       return;
     }
 
     if (confirmState.type === "reset") {
-      setAccounts(defaultAccounts);
-      resetForm();
-      setSearchTerm("");
-      setTypeFilter("all");
-      closeConfirm();
-      showToast("تمت استعادة الحسابات الافتراضية بنجاح.");
-      return;
-    }
-
-    if (confirmState.type === "updateEntries") {
-      const savedEntries = readArray("journalEntries");
-
-      const updatedEntries = savedEntries.map((entry) => {
-        return {
-          ...entry,
-          debitAccount:
-            entry.debitAccount === confirmState.oldAccountName
-              ? confirmState.newAccountName
-              : entry.debitAccount,
-          creditAccount:
-            entry.creditAccount === confirmState.oldAccountName
-              ? confirmState.newAccountName
-              : entry.creditAccount,
-        };
-      });
-
-      localStorage.setItem("journalEntries", JSON.stringify(updatedEntries));
-
-      if (confirmState.pendingUpdatedAccounts) {
-        setAccounts(confirmState.pendingUpdatedAccounts);
-      }
-
-      resetForm();
-      closeConfirm();
-      showToast("تم تحديث الحساب وتحديث القيود القديمة بنجاح.");
+      await confirmResetAccounts();
     }
   }
 
-  function cancelConfirm() {
-    if (confirmState.type === "updateEntries") {
-      if (confirmState.pendingUpdatedAccounts) {
-        setAccounts(confirmState.pendingUpdatedAccounts);
-      }
+  async function confirmDeleteAccount() {
+    const id = confirmState.accountId;
 
-      resetForm();
-      showToast("تم تحديث الحساب بدون تعديل القيود القديمة.", "success");
+    if (!id) {
+      closeConfirm();
+      return;
     }
 
-    closeConfirm();
+    try {
+      const token = getAuthToken();
+
+      const response = await fetch(`${API_BASE_URL}/accounts/${id}`, {
+        method: "DELETE",
+        headers: {
+          Accept: "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        showToast(data.message || "تعذر حذف الحساب.", "error");
+        closeConfirm();
+        return;
+      }
+
+      setAccounts((prev) => prev.filter((account) => account.id !== id));
+
+      if (editingId === id) {
+        resetForm();
+      }
+
+      closeConfirm();
+      showToast(data.message || "تم حذف الحساب بنجاح.");
+    } catch {
+      closeConfirm();
+      showToast("تعذر الاتصال بالسيرفر أثناء حذف الحساب.", "error");
+    }
+  }
+
+  async function confirmResetAccounts() {
+    try {
+      const token = getAuthToken();
+
+      const response = await fetch(`${API_BASE_URL}/accounts/reset-defaults`, {
+        method: "POST",
+        headers: {
+          Accept: "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        showToast(data.message || "تعذر استعادة الحسابات الافتراضية.", "error");
+        closeConfirm();
+        return;
+      }
+
+      const normalizedAccounts = Array.isArray(data.accounts)
+        ? data.accounts.map(normalizeAccount)
+        : [];
+
+      setAccounts(normalizedAccounts);
+      resetForm();
+      setSearchTerm("");
+      setTypeFilter("all");
+
+      closeConfirm();
+      showToast(data.message || "تمت استعادة الحسابات الافتراضية بنجاح.");
+    } catch {
+      closeConfirm();
+      showToast("تعذر الاتصال بالسيرفر أثناء استعادة الحسابات.", "error");
+    }
   }
 
   const filteredAccounts = accounts.filter((account) => {
@@ -391,6 +393,10 @@ function AccountsPage() {
     return groups;
   }, {});
 
+  const customAccountsCount = accounts.filter((account) => {
+    return !account.isDefault;
+  }).length;
+
   return (
     <div className="page">
       <div className="container">
@@ -398,8 +404,8 @@ function AccountsPage() {
           <div>
             <h1 className="section-title">إدارة الحسابات</h1>
             <p className="section-subtitle">
-              أضف أو عدّل حساباتك المحاسبية وحدد نوع كل حساب حتى تستخدمها في
-              دفتر اليومية والقوائم المالية.
+              أضف أو عدّل حساباتك المحاسبية من قاعدة بيانات Laravel، وحدد نوع
+              كل حساب لاستخدامه في التقارير.
             </p>
           </div>
 
@@ -411,11 +417,21 @@ function AccountsPage() {
 
             <div>
               <span>حسابات مخصصة</span>
-              <strong>
-                {accounts.filter((account) => !account.isDefault).length}
-              </strong>
+              <strong>{customAccountsCount}</strong>
             </div>
           </div>
+        </div>
+
+        <div className="business-report-actions">
+          <button
+            type="button"
+            className="secondary-btn"
+            onClick={loadAccounts}
+            disabled={isLoading}
+          >
+            <RefreshCcw size={18} />
+            {isLoading ? "جاري التحديث..." : "تحديث الحسابات من السيرفر"}
+          </button>
         </div>
 
         <div className="accounts-layout">
@@ -458,9 +474,13 @@ function AccountsPage() {
               <span>{accountTypeDescriptions[form.type]}</span>
             </div>
 
-            <button className="primary-btn">
+            <button className="primary-btn" disabled={isSaving}>
               {editingId ? <Save size={18} /> : <Plus size={18} />}
-              {editingId ? "تحديث الحساب" : "إضافة الحساب"}
+              {isSaving
+                ? "جاري الحفظ..."
+                : editingId
+                ? "تحديث الحساب"
+                : "إضافة الحساب"}
             </button>
 
             {editingId && (
@@ -507,7 +527,11 @@ function AccountsPage() {
               </select>
             </div>
 
-            {filteredAccounts.length === 0 ? (
+            {isLoading ? (
+              <div className="empty-search">
+                جاري تحميل الحسابات من السيرفر...
+              </div>
+            ) : filteredAccounts.length === 0 ? (
               <div className="empty-search">
                 لا توجد حسابات مطابقة للبحث أو الفلتر الحالي.
               </div>
@@ -608,14 +632,10 @@ function AccountsPage() {
         title={confirmState.title}
         message={confirmState.message}
         confirmText={confirmState.confirmText}
-        cancelText={
-          confirmState.type === "updateEntries"
-            ? "لا، حدث الحساب فقط"
-            : "إلغاء"
-        }
+        cancelText="إلغاء"
         danger={confirmState.danger}
         onConfirm={confirmAction}
-        onCancel={cancelConfirm}
+        onCancel={closeConfirm}
       />
     </div>
   );

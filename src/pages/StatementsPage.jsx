@@ -1,43 +1,288 @@
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   TrendingUp,
   Building2,
   CheckCircle2,
   AlertCircle,
   Printer,
+  RefreshCcw,
 } from "lucide-react";
+
+import AppToast from "../components/AppToast";
+import { getAuthToken } from "../utils/auth";
+
+const API_BASE_URL = "http://127.0.0.1:8000/api";
 
 const defaultAccounts = [
   { id: 1, name: "الصندوق", type: "asset", isDefault: true },
   { id: 2, name: "البنك", type: "asset", isDefault: true },
   { id: 3, name: "العملاء", type: "asset", isDefault: true },
   { id: 4, name: "المخزون", type: "asset", isDefault: true },
-  { id: 5, name: "الأثاث", type: "asset", isDefault: true },
-  { id: 6, name: "معدات", type: "asset", isDefault: true },
-
-  { id: 7, name: "الموردون", type: "liability", isDefault: true },
-
-  { id: 8, name: "رأس المال", type: "equity", isDefault: true },
-
-  { id: 9, name: "المبيعات", type: "revenue", isDefault: true },
-
-  { id: 10, name: "المشتريات", type: "expense", isDefault: true },
-  { id: 11, name: "مصروف الإيجار", type: "expense", isDefault: true },
-  { id: 12, name: "مصروف الرواتب", type: "expense", isDefault: true },
+  { id: 5, name: "تكلفة البضاعة المباعة", type: "expense", isDefault: true },
+  { id: 6, name: "الموردون", type: "liability", isDefault: true },
+  { id: 7, name: "رأس المال", type: "equity", isDefault: true },
+  { id: 8, name: "المبيعات", type: "revenue", isDefault: true },
+  { id: 9, name: "المشتريات", type: "expense", isDefault: true },
+  { id: 10, name: "مصروف الإيجار", type: "expense", isDefault: true },
+  { id: 11, name: "مصروف الرواتب", type: "expense", isDefault: true },
 ];
 
-function StatementsPage() {
-    function printStatements() {
-  window.print();
-}
-  const entries = JSON.parse(localStorage.getItem("journalEntries")) || [];
-  const accountsList =
-    JSON.parse(localStorage.getItem("accounts")) || defaultAccounts;
+const accountTypeNames = {
+  asset: "أصل",
+  liability: "خصم",
+  equity: "حقوق ملكية",
+  revenue: "إيراد",
+  expense: "مصروف",
+  unknown: "غير مصنف",
+};
 
-  function getAccountType(accountName) {
-    const account = accountsList.find((item) => item.name === accountName);
-    return account ? account.type : "unknown";
+function formatCurrency(value) {
+  return `${Number(value || 0).toLocaleString()} ريال`;
+}
+
+function formatDate(value) {
+  return String(value || "").slice(0, 10);
+}
+
+function normalizeSalesInvoice(invoice) {
+  const items = Array.isArray(invoice.items) ? invoice.items : [];
+
+  return {
+    id: invoice.id,
+    number: invoice.id,
+    date: formatDate(invoice.invoice_date || invoice.created_at),
+    customerName: invoice.customer_name || "عميل نقدي",
+    paymentType: invoice.payment_type || "cash",
+    netTotal: Number(invoice.net_total || 0),
+    costTotal: items.reduce((sum, item) => {
+      return sum + Number(item.cost_price || 0) * Number(item.quantity || 0);
+    }, 0),
+  };
+}
+
+function normalizePurchaseInvoice(invoice) {
+  return {
+    id: invoice.id,
+    number: invoice.id,
+    date: formatDate(invoice.invoice_date || invoice.created_at),
+    supplierName: invoice.supplier_name || "مورد غير محدد",
+    paymentType: invoice.payment_type || "cash",
+    total: Number(invoice.total || 0),
+  };
+}
+
+function normalizeVoucher(voucher) {
+  return {
+    id: voucher.id,
+    number: voucher.id,
+    type: voucher.type,
+    date: formatDate(voucher.voucher_date || voucher.created_at),
+    partyName: voucher.party_name || "غير محدد",
+    amount: Number(voucher.amount || 0),
+    description: voucher.description || "",
+    debitAccount: voucher.debit_account || "",
+    creditAccount: voucher.credit_account || "",
+  };
+}
+
+function makeEntry({
+  id,
+  date,
+  debitAccount,
+  creditAccount,
+  description,
+  amount,
+  sourceLabel,
+}) {
+  return {
+    id,
+    date,
+    debitAccount,
+    creditAccount,
+    description,
+    amount: Number(amount || 0),
+    sourceLabel,
+  };
+}
+
+function getAccountInfo(accountName) {
+  return defaultAccounts.find((account) => account.name === accountName);
+}
+
+function getAccountType(accountName) {
+  const account = getAccountInfo(accountName);
+  return account ? account.type : "unknown";
+}
+
+function StatementsPage() {
+  const [salesInvoices, setSalesInvoices] = useState([]);
+  const [purchaseInvoices, setPurchaseInvoices] = useState([]);
+  const [vouchers, setVouchers] = useState([]);
+
+  const [isLoading, setIsLoading] = useState(true);
+  const [toast, setToast] = useState(null);
+
+  useEffect(() => {
+    loadStatementsData();
+  }, []);
+
+  function showToast(message, type = "success") {
+    setToast({ message, type });
+
+    setTimeout(() => {
+      setToast(null);
+    }, 3500);
   }
+
+  function printStatements() {
+    window.print();
+  }
+
+  async function loadStatementsData() {
+    setIsLoading(true);
+
+    try {
+      const token = getAuthToken();
+
+      const [salesResponse, purchasesResponse, vouchersResponse] =
+        await Promise.all([
+          fetch(`${API_BASE_URL}/sales-invoices`, {
+            headers: {
+              Accept: "application/json",
+              Authorization: `Bearer ${token}`,
+            },
+          }),
+          fetch(`${API_BASE_URL}/purchase-invoices`, {
+            headers: {
+              Accept: "application/json",
+              Authorization: `Bearer ${token}`,
+            },
+          }),
+          fetch(`${API_BASE_URL}/vouchers`, {
+            headers: {
+              Accept: "application/json",
+              Authorization: `Bearer ${token}`,
+            },
+          }),
+        ]);
+
+      const salesData = await salesResponse.json();
+      const purchasesData = await purchasesResponse.json();
+      const vouchersData = await vouchersResponse.json();
+
+      if (!salesResponse.ok) {
+        showToast(salesData.message || "تعذر تحميل فواتير المبيعات.", "error");
+      }
+
+      if (!purchasesResponse.ok) {
+        showToast(
+          purchasesData.message || "تعذر تحميل فواتير المشتريات.",
+          "error"
+        );
+      }
+
+      if (!vouchersResponse.ok) {
+        showToast(vouchersData.message || "تعذر تحميل السندات.", "error");
+      }
+
+      setSalesInvoices(
+        Array.isArray(salesData.sales_invoices)
+          ? salesData.sales_invoices.map(normalizeSalesInvoice)
+          : []
+      );
+
+      setPurchaseInvoices(
+        Array.isArray(purchasesData.purchase_invoices)
+          ? purchasesData.purchase_invoices.map(normalizePurchaseInvoice)
+          : []
+      );
+
+      setVouchers(
+        Array.isArray(vouchersData.vouchers)
+          ? vouchersData.vouchers.map(normalizeVoucher)
+          : []
+      );
+    } catch {
+      showToast(
+        "تعذر الاتصال بالسيرفر. تأكد أن Laravel يعمل على http://127.0.0.1:8000",
+        "error"
+      );
+    }
+
+    setIsLoading(false);
+  }
+
+  const entries = useMemo(() => {
+    const generatedEntries = [];
+
+    salesInvoices.forEach((invoice) => {
+      const debitAccount =
+        invoice.paymentType === "credit" ? "العملاء" : "الصندوق";
+
+      generatedEntries.push(
+        makeEntry({
+          id: `sale-revenue-${invoice.id}`,
+          date: invoice.date,
+          debitAccount,
+          creditAccount: "المبيعات",
+          description: `إثبات فاتورة بيع رقم ${invoice.number} - ${invoice.customerName}`,
+          amount: invoice.netTotal,
+          sourceLabel: "مبيعات",
+        })
+      );
+
+      if (invoice.costTotal > 0) {
+        generatedEntries.push(
+          makeEntry({
+            id: `sale-cost-${invoice.id}`,
+            date: invoice.date,
+            debitAccount: "تكلفة البضاعة المباعة",
+            creditAccount: "المخزون",
+            description: `إثبات تكلفة البضاعة المباعة لفاتورة بيع رقم ${invoice.number}`,
+            amount: invoice.costTotal,
+            sourceLabel: "تكلفة مبيعات",
+          })
+        );
+      }
+    });
+
+    purchaseInvoices.forEach((invoice) => {
+      const creditAccount =
+        invoice.paymentType === "credit" ? "الموردون" : "الصندوق";
+
+      generatedEntries.push(
+        makeEntry({
+          id: `purchase-${invoice.id}`,
+          date: invoice.date,
+          debitAccount: "المخزون",
+          creditAccount,
+          description: `إثبات فاتورة شراء رقم ${invoice.number} - ${invoice.supplierName}`,
+          amount: invoice.total,
+          sourceLabel: "مشتريات",
+        })
+      );
+    });
+
+    vouchers.forEach((voucher) => {
+      generatedEntries.push(
+        makeEntry({
+          id: `voucher-${voucher.id}`,
+          date: voucher.date,
+          debitAccount: voucher.debitAccount,
+          creditAccount: voucher.creditAccount,
+          description:
+            voucher.description ||
+            `${voucher.type === "receipt" ? "سند قبض" : "سند صرف"} رقم ${
+              voucher.number
+            } - ${voucher.partyName}`,
+          amount: voucher.amount,
+          sourceLabel: voucher.type === "receipt" ? "سند قبض" : "سند صرف",
+        })
+      );
+    });
+
+    return generatedEntries.filter((entry) => Number(entry.amount || 0) > 0);
+  }, [salesInvoices, purchaseInvoices, vouchers]);
 
   const statements = useMemo(() => {
     const accountsMap = {};
@@ -61,8 +306,8 @@ function StatementsPage() {
         };
       }
 
-      accountsMap[entry.debitAccount].debit += Number(entry.amount);
-      accountsMap[entry.creditAccount].credit += Number(entry.amount);
+      accountsMap[entry.debitAccount].debit += Number(entry.amount || 0);
+      accountsMap[entry.creditAccount].credit += Number(entry.amount || 0);
     });
 
     const allAccounts = Object.values(accountsMap);
@@ -102,39 +347,35 @@ function StatementsPage() {
         balance: account.credit - account.debit,
       }));
 
-    const unknownAccounts = allAccounts.filter(
-      (account) => account.type === "unknown"
-    );
+    const unknownAccounts = allAccounts.filter((account) => {
+      return account.type === "unknown";
+    });
 
-    const totalRevenues = revenues.reduce(
-      (sum, account) => sum + account.balance,
-      0
-    );
+    const totalRevenues = revenues.reduce((sum, account) => {
+      return sum + Number(account.balance || 0);
+    }, 0);
 
-    const totalExpenses = expenses.reduce(
-      (sum, account) => sum + account.balance,
-      0
-    );
+    const totalExpenses = expenses.reduce((sum, account) => {
+      return sum + Number(account.balance || 0);
+    }, 0);
 
     const netIncome = totalRevenues - totalExpenses;
 
-    const totalAssets = assets.reduce(
-      (sum, account) => sum + account.balance,
-      0
-    );
+    const totalAssets = assets.reduce((sum, account) => {
+      return sum + Number(account.balance || 0);
+    }, 0);
 
-    const totalLiabilities = liabilities.reduce(
-      (sum, account) => sum + account.balance,
-      0
-    );
+    const totalLiabilities = liabilities.reduce((sum, account) => {
+      return sum + Number(account.balance || 0);
+    }, 0);
 
-    const totalEquityBeforeProfit = equity.reduce(
-      (sum, account) => sum + account.balance,
-      0
-    );
+    const totalEquityBeforeProfit = equity.reduce((sum, account) => {
+      return sum + Number(account.balance || 0);
+    }, 0);
 
     const totalEquity = totalEquityBeforeProfit + netIncome;
     const totalLiabilitiesAndEquity = totalLiabilities + totalEquity;
+    const statementDifference = totalAssets - totalLiabilitiesAndEquity;
 
     return {
       revenues,
@@ -151,11 +392,11 @@ function StatementsPage() {
       totalEquityBeforeProfit,
       totalEquity,
       totalLiabilitiesAndEquity,
+      statementDifference,
     };
-  }, [entries, accountsList]);
+  }, [entries]);
 
-  const isBalanced =
-    statements.totalAssets === statements.totalLiabilitiesAndEquity;
+  const isBalanced = Math.abs(statements.statementDifference) < 0.01;
 
   return (
     <div className="page">
@@ -164,16 +405,27 @@ function StatementsPage() {
           <div>
             <h1 className="section-title">القوائم المالية</h1>
             <p className="section-subtitle">
-              يتم إنشاء قائمة الدخل وقائمة المركز المالي تلقائيًا حسب أنواع
-              الحسابات الموجودة في صفحة إدارة الحسابات.
+              يتم إنشاء قائمة الدخل وقائمة المركز المالي تلقائيًا من بيانات
+              Laravel: فواتير البيع، فواتير الشراء، والسندات.
             </p>
           </div>
+
           <div className="report-actions no-print">
-  <button className="primary-btn" onClick={printStatements}>
-    <Printer size={18} />
-    طباعة / حفظ PDF
-  </button>
-</div>
+            <button
+              type="button"
+              className="secondary-btn"
+              onClick={loadStatementsData}
+              disabled={isLoading}
+            >
+              <RefreshCcw size={18} />
+              {isLoading ? "جاري التحديث..." : "تحديث من السيرفر"}
+            </button>
+
+            <button className="primary-btn" onClick={printStatements}>
+              <Printer size={18} />
+              طباعة / حفظ PDF
+            </button>
+          </div>
 
           <div className="stats-box">
             <div>
@@ -181,7 +433,7 @@ function StatementsPage() {
               <strong
                 className={statements.netIncome >= 0 ? "good-text" : "bad-text"}
               >
-                {Math.abs(statements.netIncome).toLocaleString()} ريال
+                {formatCurrency(Math.abs(statements.netIncome))}
               </strong>
             </div>
 
@@ -192,11 +444,16 @@ function StatementsPage() {
           </div>
         </div>
 
-        {entries.length === 0 ? (
+        {isLoading ? (
+          <div className="coming-card">
+            <h2>جاري تحميل القوائم المالية...</h2>
+            <p>يتم جلب فواتير البيع والشراء والسندات من Laravel.</p>
+          </div>
+        ) : entries.length === 0 ? (
           <div className="coming-card">
             <h2>لا توجد بيانات بعد</h2>
             <p>
-              أضف قيودًا من صفحة دفتر اليومية، وبعدها ستظهر القوائم المالية هنا
+              أنشئ فاتورة بيع أو شراء أو سندًا، وبعدها ستظهر القوائم المالية هنا
               تلقائيًا.
             </p>
           </div>
@@ -206,8 +463,8 @@ function StatementsPage() {
               <div className="balance-status error">
                 <AlertCircle size={22} />
                 <span>
-                  توجد حسابات غير مصنفة. افتح صفحة إدارة الحسابات وأضف هذه
-                  الحسابات مع تحديد نوعها حتى تظهر القوائم بشكل صحيح.
+                  توجد حسابات غير مصنفة. أضف هذه الحسابات لاحقًا في إدارة
+                  الحسابات أو حدّث قائمة الحسابات الافتراضية.
                 </span>
               </div>
             )}
@@ -227,7 +484,10 @@ function StatementsPage() {
                 <span>قائمة المركز المالي متوازنة</span>
               ) : (
                 <span>
-                  قائمة المركز المالي غير متوازنة، راجع تصنيف الحسابات أو القيود.
+                  قائمة المركز المالي غير متوازنة، الفرق هو{" "}
+                  {formatCurrency(Math.abs(statements.statementDifference))}.
+                  قد يكون السبب عدم وجود قيد رأس مال افتتاحي أو وجود مخزون
+                  تجريبي بدون قيد افتتاحي.
                 </span>
               )}
             </div>
@@ -248,16 +508,14 @@ function StatementsPage() {
                     statements.revenues.map((account) => (
                       <div className="statement-row" key={account.name}>
                         <span>{account.name}</span>
-                        <strong>{account.balance.toLocaleString()} ريال</strong>
+                        <strong>{formatCurrency(account.balance)}</strong>
                       </div>
                     ))
                   )}
 
                   <div className="statement-total">
                     <span>إجمالي الإيرادات</span>
-                    <strong>
-                      {statements.totalRevenues.toLocaleString()} ريال
-                    </strong>
+                    <strong>{formatCurrency(statements.totalRevenues)}</strong>
                   </div>
                 </div>
 
@@ -270,16 +528,14 @@ function StatementsPage() {
                     statements.expenses.map((account) => (
                       <div className="statement-row" key={account.name}>
                         <span>{account.name}</span>
-                        <strong>{account.balance.toLocaleString()} ريال</strong>
+                        <strong>{formatCurrency(account.balance)}</strong>
                       </div>
                     ))
                   )}
 
                   <div className="statement-total">
                     <span>إجمالي المصروفات</span>
-                    <strong>
-                      {statements.totalExpenses.toLocaleString()} ريال
-                    </strong>
+                    <strong>{formatCurrency(statements.totalExpenses)}</strong>
                   </div>
                 </div>
 
@@ -293,9 +549,7 @@ function StatementsPage() {
                   <span>
                     {statements.netIncome >= 0 ? "صافي الربح" : "صافي الخسارة"}
                   </span>
-                  <strong>
-                    {Math.abs(statements.netIncome).toLocaleString()} ريال
-                  </strong>
+                  <strong>{formatCurrency(Math.abs(statements.netIncome))}</strong>
                 </div>
               </div>
 
@@ -314,14 +568,14 @@ function StatementsPage() {
                     statements.assets.map((account) => (
                       <div className="statement-row" key={account.name}>
                         <span>{account.name}</span>
-                        <strong>{account.balance.toLocaleString()} ريال</strong>
+                        <strong>{formatCurrency(account.balance)}</strong>
                       </div>
                     ))
                   )}
 
                   <div className="statement-total">
                     <span>إجمالي الأصول</span>
-                    <strong>{statements.totalAssets.toLocaleString()} ريال</strong>
+                    <strong>{formatCurrency(statements.totalAssets)}</strong>
                   </div>
                 </div>
 
@@ -334,16 +588,14 @@ function StatementsPage() {
                     statements.liabilities.map((account) => (
                       <div className="statement-row" key={account.name}>
                         <span>{account.name}</span>
-                        <strong>{account.balance.toLocaleString()} ريال</strong>
+                        <strong>{formatCurrency(account.balance)}</strong>
                       </div>
                     ))
                   )}
 
                   <div className="statement-total">
                     <span>إجمالي الخصوم</span>
-                    <strong>
-                      {statements.totalLiabilities.toLocaleString()} ريال
-                    </strong>
+                    <strong>{formatCurrency(statements.totalLiabilities)}</strong>
                   </div>
                 </div>
 
@@ -356,7 +608,7 @@ function StatementsPage() {
                     statements.equity.map((account) => (
                       <div className="statement-row" key={account.name}>
                         <span>{account.name}</span>
-                        <strong>{account.balance.toLocaleString()} ريال</strong>
+                        <strong>{formatCurrency(account.balance)}</strong>
                       </div>
                     ))
                   )}
@@ -367,19 +619,19 @@ function StatementsPage() {
                         ? "صافي الربح"
                         : "صافي الخسارة"}
                     </span>
-                    <strong>{statements.netIncome.toLocaleString()} ريال</strong>
+                    <strong>{formatCurrency(statements.netIncome)}</strong>
                   </div>
 
                   <div className="statement-total">
                     <span>إجمالي حقوق الملكية</span>
-                    <strong>{statements.totalEquity.toLocaleString()} ريال</strong>
+                    <strong>{formatCurrency(statements.totalEquity)}</strong>
                   </div>
                 </div>
 
                 <div className="net-result">
                   <span>إجمالي الخصوم وحقوق الملكية</span>
                   <strong>
-                    {statements.totalLiabilitiesAndEquity.toLocaleString()} ريال
+                    {formatCurrency(statements.totalLiabilitiesAndEquity)}
                   </strong>
                 </div>
               </div>
@@ -387,6 +639,8 @@ function StatementsPage() {
           </>
         )}
       </div>
+
+      <AppToast toast={toast} onClose={() => setToast(null)} />
     </div>
   );
 }
