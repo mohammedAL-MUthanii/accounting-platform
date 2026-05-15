@@ -13,7 +13,7 @@ import {
 import AppToast from "../components/AppToast";
 import { getAuthToken } from "../utils/auth";
 
-const API_BASE_URL = "http://127.0.0.1:8000/api";
+import { API_BASE_URL } from "../config/api";
 
 function formatCurrency(value) {
   return `${Number(value || 0).toLocaleString()} ريال`;
@@ -166,8 +166,7 @@ function PartiesPage() {
       );
     } catch {
       showToast(
-        "تعذر الاتصال بالسيرفر. تأكد أن Laravel يعمل على http://127.0.0.1:8000",
-        "error"
+      "تعذر الاتصال بالسيرفر. تأكد من اتصال الإنترنت أو من تشغيل خدمة الباك إند."
       );
     }
 

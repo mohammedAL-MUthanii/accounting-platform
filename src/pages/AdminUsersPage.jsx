@@ -5,7 +5,7 @@ import { getAuthToken, getCurrentUser } from "../utils/auth";
 import AppToast from "../components/AppToast";
 import AppConfirm from "../components/AppConfirm";
 
-const API_BASE_URL = "http://127.0.0.1:8000/api";
+import { API_BASE_URL } from "../config/api";
 
 function AdminUsersPage() {
   const currentUser = getCurrentUser();

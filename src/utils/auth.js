@@ -1,7 +1,9 @@
+import { API_BASE_URL } from "../config/api";
 const AUTH_USER_KEY = "mohasbti_current_user";
+
 const AUTH_TOKEN_KEY = "mohasbti_auth_token";
 
-const API_BASE_URL = "http://127.0.0.1:8000/api";
+
 
 function saveAuthData(user, token) {
   localStorage.setItem(AUTH_USER_KEY, JSON.stringify(user));
@@ -59,7 +61,7 @@ export async function loginUser(email, password) {
     return {
       success: false,
       message:
-        "تعذر الاتصال بالسيرفر. تأكد أن Laravel يعمل على http://127.0.0.1:8000",
+      "تعذر الاتصال بالسيرفر. تأكد من اتصال الإنترنت أو من تشغيل خدمة الباك إند."
     };
   }
 }
@@ -106,7 +108,7 @@ export async function registerUser(name, email, password) {
     return {
       success: false,
       message:
-        "تعذر الاتصال بالسيرفر. تأكد أن Laravel يعمل على http://127.0.0.1:8000",
+       "تعذر الاتصال بالسيرفر. تأكد من اتصال الإنترنت أو من تشغيل خدمة الباك إند."
     };
   }
 }
